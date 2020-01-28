@@ -28,8 +28,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Arrays;
-
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Collections.singleton;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -58,7 +56,7 @@ public class StreamingJob {
 
 
     final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-    env.enableCheckpointing(SECONDS.toMillis(1));
+    env.enableCheckpointing(SECONDS.toMillis(3));
     env.getCheckpointConfig().setMinPauseBetweenCheckpoints(SECONDS.toMillis(1));
 
 //    env.addSource(new WikipediaEditsSource())
@@ -66,9 +64,12 @@ public class StreamingJob {
 //        .map(edit -> JsonDocument.create(
 //            edit.getTitle(),
 //            JsonObject.fromJson(new ObjectMapper().writeValueAsString(edit))))
+    env.setMaxParallelism(2);
+    env.setParallelism(2);
 
-    env.addSource(new CouchbaseSource())
-        .filter(CouchbaseDocumentChange::isMutation)
+    env.addSource(new CouchbaseSource(), "Couchbase Document Changes")
+        .shuffle()
+        .filter(change -> change.isMutation() )
         .filter(change -> change.content().length > 0)
         // todo figure out how to handle deletions?
         .map(new MapFunction<CouchbaseDocumentChange, JsonDocument>() {

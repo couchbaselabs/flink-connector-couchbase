@@ -16,6 +16,8 @@
 
 package com.couchbase.connector.flink.dcp;
 
+import com.couchbase.client.dcp.highlevel.StreamOffset;
+
 import java.io.Serializable;
 import java.util.Objects;
 
@@ -24,10 +26,13 @@ import static java.util.Objects.requireNonNull;
 public class DcpVbucketAndOffset implements Serializable {
   private static final long serialVersionUID = 1;
 
-  private final int vbucket;
-  private final DcpStreamOffset offset;
+  private int vbucket;
+  private StreamOffset offset;
 
-  public DcpVbucketAndOffset(int vbucket, DcpStreamOffset offset) {
+  public DcpVbucketAndOffset() {
+  }
+
+  public DcpVbucketAndOffset(int vbucket, StreamOffset offset) {
     this.vbucket = vbucket;
     this.offset = requireNonNull(offset);
   }
@@ -36,8 +41,16 @@ public class DcpVbucketAndOffset implements Serializable {
     return vbucket;
   }
 
-  public DcpStreamOffset getOffset() {
+  public void setVbucket(int vbucket) {
+    this.vbucket = vbucket;
+  }
+
+  public StreamOffset getOffset() {
     return offset;
+  }
+
+  public void setOffset(StreamOffset offset) {
+    this.offset = offset;
   }
 
   @Override

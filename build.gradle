@@ -36,6 +36,7 @@ applicationDefaultJvmArgs = ["-Dlog4j.configuration=log4j.properties"]
 
 // declare where to find the dependencies of your project
 repositories {
+    mavenLocal()
     mavenCentral()
 }
 
@@ -68,7 +69,7 @@ dependencies {
     //flinkShadowJar "org.apache.flink:flink-connector-kafka-0.11_${scalaBinaryVersion}:${flinkVersion}"
     flinkShadowJar "org.apache.flink:flink-connector-wikiedits_${scalaBinaryVersion}:${flinkVersion}"
     flinkShadowJar 'com.couchbase.client:java-client:2.7.10'
-    flinkShadowJar 'com.couchbase.client:dcp-client:0.24.0'
+    flinkShadowJar 'com.couchbase.client:dcp-client:0.26.0-SNAPSHOT'
 
     compile "log4j:log4j:${log4jVersion}"
     compile "org.slf4j:slf4j-log4j12:${slf4jVersion}"
