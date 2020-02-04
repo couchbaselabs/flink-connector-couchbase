@@ -24,8 +24,6 @@ import com.couchbase.client.dcp.highlevel.FlowControlMode;
 import com.couchbase.client.dcp.highlevel.Mutation;
 import com.couchbase.client.dcp.highlevel.StreamFailure;
 import com.couchbase.client.dcp.highlevel.StreamOffset;
-import com.couchbase.connector.flink.dcp.ArrayConcurrentIntMap;
-import com.couchbase.connector.flink.dcp.ConcurrentIntMap;
 import com.couchbase.connector.flink.dcp.DcpVbucketAndOffset;
 import com.couchbase.connector.flink.dcp.PartitionHelper;
 import org.apache.flink.api.common.functions.RuntimeContext;
@@ -44,6 +42,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -55,24 +54,26 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
     implements CheckpointedFunction {
 
   private static final Logger log = LoggerFactory.getLogger(CouchbaseSource.class);
+  private static final Exception poisonPill = new Exception();
 
   private volatile boolean running;
   private volatile String taskDescription;
 
   private transient ListState<DcpVbucketAndOffset> state;
-  private transient Map<Integer, StreamOffset> vbucketToRestoreOffset;
 
   private final BlockingQueue<Throwable> fatalErrorQueue = new LinkedBlockingQueue<>();
 
-  private static final Exception poisonPill = new Exception();
-
-  private Counter mutations;
-  private Counter deletions;
-  private Counter expirations;
+  private transient Counter mutations;
+  private transient Counter deletions;
+  private transient Counter expirations;
   private Client client;
 
-  private static final int MAX_VBUCKETS = 2048; // normally 1024, but some experimental builds use more.
-  private final ConcurrentIntMap<StreamOffset> vbucketToStreamOffset = new ArrayConcurrentIntMap<>(MAX_VBUCKETS);
+  private transient Object checkpointLock;
+
+  private static final int MAX_VBUCKETS = 1024;
+
+  // @GuardedBy(checkpointLock)
+  private final StreamOffset[] vbucketToStreamOffset = new StreamOffset[MAX_VBUCKETS];
 
   @Override
   public void open(Configuration parameters) throws Exception {
@@ -95,6 +96,7 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
 
     final RuntimeContext runtime = getRuntimeContext();
     this.taskDescription = runtime.getTaskNameWithSubtasks();
+    this.checkpointLock = ctx.getCheckpointLock();
 
     client.listener(new DatabaseChangeListener() {
       @Override
@@ -118,10 +120,9 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
         CouchbaseDocumentChange.Type type = change.isMutation() ? CouchbaseDocumentChange.Type.MUTATION : CouchbaseDocumentChange.Type.DELETION;
         final CouchbaseDocumentChange item = new CouchbaseDocumentChange(type, change.getKey(), change.getVbucket(), change.getContent());
 
-
         synchronized (ctx.getCheckpointLock()) {
-          vbucketToStreamOffset.put(change.getVbucket(), change.getOffset());
           ctx.collect(item);
+          vbucketToStreamOffset[change.getVbucket()] = change.getOffset();
         }
       }
 
@@ -136,9 +137,10 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
     log.info("{} handling partitions: {}", taskDescription, myPartitions);
 
     final Map<Integer, StreamOffset> resumeOffsets = myPartitions.stream()
-        .collect(toMap(p -> p, p -> vbucketToRestoreOffset.getOrDefault(p, StreamOffset.ZERO)));
+        .collect(toMap(p -> p, p -> Optional.ofNullable(vbucketToStreamOffset[p]).orElse(StreamOffset.ZERO)));
 
     if (resumeOffsets.isEmpty()) {
+      // Shouldn't happen unless there are more subtasks than vbuckets
       log.warn("No work for {}", taskDescription);
       return;
     }
@@ -189,9 +191,13 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
       return;
     }
 
+    if (!Thread.holdsLock(checkpointLock)) {
+      throw new AssertionError("Thread didn't hold checkpoint lock!");
+    }
+
     state.clear();
-    for (int i = 0; i < MAX_VBUCKETS; i++) {
-      StreamOffset offset = vbucketToStreamOffset.get(i);
+    for (int i = 0; i < vbucketToStreamOffset.length; i++) {
+      StreamOffset offset = vbucketToStreamOffset[i];
       if (offset != null) {
         state.add(new DcpVbucketAndOffset(i, offset));
         log.debug("snapshot state for vbucket {}: {}", i, offset);
@@ -204,14 +210,27 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
     state = context.getOperatorStateStore().getUnionListState(
         new ListStateDescriptor<>("couchbase-stream-offsets", TypeInformation.of(DcpVbucketAndOffset.class)));
 
-    vbucketToRestoreOffset = new TreeMap<>(); // sorted just for pretty output
 
     if (!context.isRestored()) {
       log.info("No restore state for CouchbaseSource.");
       return;
     }
 
-    state.get().forEach(i -> vbucketToRestoreOffset.put(i.getVbucket(), i.getOffset()));
-    log.debug("Restore state for CouchbaseSource: {}", vbucketToRestoreOffset);
+    if (checkpointLock == null) {
+      throw new AssertionError("oops, checkpoint lock not initialized yet");
+    }
+
+    synchronized (checkpointLock) {
+      state.get().forEach(i -> vbucketToStreamOffset[i.getVbucket()] = i.getOffset());
+    }
+
+    Map<Integer, StreamOffset> display = new TreeMap<>(); // sorted just for pretty output
+    for (int i = 0; i < vbucketToStreamOffset.length; i++) {
+      if (vbucketToStreamOffset[i] != null) {
+        display.put(i, vbucketToStreamOffset[i]);
+
+      }
+      log.debug("Restore state for CouchbaseSource: {}", display);
+    }
   }
 }

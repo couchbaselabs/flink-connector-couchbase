@@ -16,7 +16,6 @@
 
 package com.couchbase.connector.flink;
 
-import com.couchbase.client.deps.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.couchbase.client.java.document.JsonDocument;
@@ -26,7 +25,6 @@ import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import java.util.ArrayList;
 import java.util.Set;
 
-@JsonIgnoreProperties(ignoreUnknown = false)
 public class CouchbaseJsonSink extends RichSinkFunction<JsonDocument> {
 
   private CouchbaseCluster cluster;
