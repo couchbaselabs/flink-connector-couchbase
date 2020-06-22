@@ -16,42 +16,41 @@
 
 package com.couchbase.connector.flink;
 
-import com.couchbase.client.java.Bucket;
-import com.couchbase.client.java.CouchbaseCluster;
-import com.couchbase.client.java.document.JsonDocument;
+import com.couchbase.client.java.Cluster;
+import com.couchbase.client.java.Collection;
+import com.couchbase.client.java.codec.RawJsonTranscoder;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 
-import java.util.ArrayList;
-import java.util.Set;
+import static com.couchbase.client.java.kv.UpsertOptions.upsertOptions;
+import static java.util.Objects.requireNonNull;
 
 public class CouchbaseJsonSink extends RichSinkFunction<JsonDocument> {
+  private Cluster cluster;
+  private Collection collection;
 
-  private CouchbaseCluster cluster;
-  private Bucket bucket;
-
-  private Set<String> seedNodes;
+  private String connectionString;
   private String username;
   private String password;
   private String bucketName;
 
-  public CouchbaseJsonSink(Set<String> seedNodes, String username, String password, String bucketName) {
-    this.seedNodes = seedNodes;
-    this.username = username;
-    this.password = password;
-    this.bucketName = bucketName;
+  public CouchbaseJsonSink(String connectionString, String username, String password, String bucketName) {
+    this.connectionString = requireNonNull(connectionString);
+    this.username = requireNonNull(username);
+    this.password = requireNonNull(password);
+    this.bucketName = requireNonNull(bucketName);
   }
 
   @Override
   public void invoke(JsonDocument doc, Context context) throws Exception {
-    bucket.upsert(doc);
+    collection.upsert(doc.id(), doc, upsertOptions()
+        .transcoder(RawJsonTranscoder.INSTANCE));
   }
 
   @Override
   public void open(Configuration parameters) throws Exception {
-    cluster = CouchbaseCluster.create(new ArrayList<>(seedNodes));
-    cluster.authenticate(username, password);
-    bucket = cluster.openBucket(bucketName);
+    cluster = Cluster.connect(connectionString, username, password);
+    collection = cluster.bucket(bucketName).defaultCollection();
   }
 
   @Override

@@ -68,7 +68,7 @@ dependencies {
     // --------------------------------------------------------------
     //flinkShadowJar "org.apache.flink:flink-connector-kafka-0.11_${scalaBinaryVersion}:${flinkVersion}"
     flinkShadowJar "org.apache.flink:flink-connector-wikiedits_${scalaBinaryVersion}:${flinkVersion}"
-    flinkShadowJar 'com.couchbase.client:java-client:2.7.10'
+    flinkShadowJar 'com.couchbase.client:java-client:3.0.5'
     flinkShadowJar 'com.couchbase.client:dcp-client:0.28.0'
 
     compile "log4j:log4j:${log4jVersion}"

@@ -18,8 +18,7 @@
 
 package org.myorg.quickstart;
 
-import com.couchbase.client.java.document.JsonDocument;
-import com.couchbase.client.java.document.json.JsonObject;
+import com.couchbase.connector.flink.JsonDocument;
 import com.couchbase.connector.flink.CouchbaseDocumentChange;
 import com.couchbase.connector.flink.CouchbaseJsonSink;
 import com.couchbase.connector.flink.CouchbaseSource;
@@ -29,7 +28,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Collections.singleton;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
@@ -76,7 +74,7 @@ public class StreamingJob {
           @Override
           public JsonDocument map(CouchbaseDocumentChange documentChange) throws Exception {
             try {
-              return JsonDocument.create(documentChange.key(), JsonObject.fromJson(new String(documentChange.content(), UTF_8)));
+              return new JsonDocument(documentChange.key(), documentChange.content());
             } catch (Exception e) {
               e.printStackTrace();
               System.out.println("key: " + documentChange.key());
@@ -87,7 +85,7 @@ public class StreamingJob {
           }
         })
 
-        .addSink(new CouchbaseJsonSink(singleton("localhost"), "Administrator", "password", "default"))
+        .addSink(new CouchbaseJsonSink("localhost", "Administrator", "password", "default"))
         //.map(WikipediaEditEvent::getTitle)
         //env.readTextFile("/tmp/flinkin.txt")
         //source
