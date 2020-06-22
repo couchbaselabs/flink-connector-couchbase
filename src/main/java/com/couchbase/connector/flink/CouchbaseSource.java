@@ -83,8 +83,8 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
     expirations = metrics.counter("dcpExpirations");
 
     client = Client.builder()
-        .productName("flink-connector", "0.1")
-        .hostnames("localhost")
+        .userAgent("flink-connector", "0.1.0")
+        .seedNodes("localhost")
         .credentials("Administrator", "password")
         .bucket("travel-sample")
         .build();
