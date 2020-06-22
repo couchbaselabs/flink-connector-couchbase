@@ -82,11 +82,13 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
     deletions = metrics.counter("dcpDeletions");
     expirations = metrics.counter("dcpExpirations");
 
+    String subtaskName = getRuntimeContext().getTaskNameWithSubtasks();
     client = Client.builder()
-        .userAgent("flink-connector", "0.1.0")
+        .userAgent("flink-connector", "0.1.0", subtaskName)
         .seedNodes("localhost")
         .credentials("Administrator", "password")
         .bucket("travel-sample")
+        .flowControl(128 * 1024 * 1024)
         .build();
   }
 

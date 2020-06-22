@@ -43,7 +43,7 @@ public class CouchbaseJsonSink extends RichSinkFunction<JsonDocument> {
 
   @Override
   public void invoke(JsonDocument doc, Context context) throws Exception {
-    collection.upsert(doc.id(), doc, upsertOptions()
+    collection.upsert(doc.id(), doc.content(), upsertOptions()
         .transcoder(RawJsonTranscoder.INSTANCE));
   }
 
@@ -55,6 +55,8 @@ public class CouchbaseJsonSink extends RichSinkFunction<JsonDocument> {
 
   @Override
   public void close() throws Exception {
-    cluster.disconnect();
+    if (cluster != null) {
+      cluster.disconnect();
+    }
   }
 }
