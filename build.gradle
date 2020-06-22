@@ -15,7 +15,7 @@ description = """Flink Quickstart Job"""
 
 ext {
     javaVersion = '1.8'
-    flinkVersion = '1.9.1'
+    flinkVersion = '1.10.1'
     scalaBinaryVersion = '2.11'
     slf4jVersion = '1.7.7'
     log4jVersion = '1.2.17'
