@@ -29,10 +29,10 @@ public class CouchbaseJsonSink extends RichSinkFunction<JsonDocument> {
   private Cluster cluster;
   private Collection collection;
 
-  private String connectionString;
-  private String username;
-  private String password;
-  private String bucketName;
+  private final String connectionString;
+  private final String username;
+  private final String password;
+  private final String bucketName;
 
   public CouchbaseJsonSink(String connectionString, String username, String password, String bucketName) {
     this.connectionString = requireNonNull(connectionString);

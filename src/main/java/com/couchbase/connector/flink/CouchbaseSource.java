@@ -47,6 +47,7 @@ import java.util.TreeMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.toMap;
 
@@ -75,6 +76,18 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
   // @GuardedBy(checkpointLock)
   private final StreamOffset[] vbucketToStreamOffset = new StreamOffset[MAX_VBUCKETS];
 
+  private final String connectionString;
+  private final String username;
+  private final String password;
+  private final String bucketName;
+
+  public CouchbaseSource(String connectionString, String username, String password, String bucketName) {
+    this.connectionString = requireNonNull(connectionString);
+    this.username = requireNonNull(username);
+    this.password = requireNonNull(password);
+    this.bucketName = requireNonNull(bucketName);
+  }
+
   @Override
   public void open(Configuration parameters) throws Exception {
     MetricGroup metrics = getRuntimeContext().getMetricGroup();
@@ -85,9 +98,9 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
     String subtaskName = getRuntimeContext().getTaskNameWithSubtasks();
     client = Client.builder()
         .userAgent("flink-connector", "0.1.0", subtaskName)
-        .seedNodes("localhost")
-        .credentials("Administrator", "password")
-        .bucket("travel-sample")
+        .connectionString(connectionString)
+        .credentials(username, password)
+        .bucket(bucketName)
         .flowControl(128 * 1024 * 1024)
         .build();
   }

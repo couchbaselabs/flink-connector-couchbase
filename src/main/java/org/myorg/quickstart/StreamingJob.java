@@ -18,10 +18,10 @@
 
 package org.myorg.quickstart;
 
-import com.couchbase.connector.flink.JsonDocument;
 import com.couchbase.connector.flink.CouchbaseDocumentChange;
 import com.couchbase.connector.flink.CouchbaseJsonSink;
 import com.couchbase.connector.flink.CouchbaseSource;
+import com.couchbase.connector.flink.JsonDocument;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.slf4j.Logger;
@@ -65,9 +65,10 @@ public class StreamingJob {
     env.setMaxParallelism(2);
     env.setParallelism(2);
 
-    env.addSource(new CouchbaseSource(), "Couchbase Document Changes")
+    CouchbaseSource source = new CouchbaseSource("localhost", "Administrator", "password", "travel-sample");
+    env.addSource(source, "Couchbase Document Changes")
         .shuffle()
-        .filter(change -> change.isMutation() )
+        .filter(change -> change.isMutation())
         .filter(change -> change.content().length > 0)
         // todo figure out how to handle deletions?
         .map(new MapFunction<CouchbaseDocumentChange, JsonDocument>() {
@@ -85,7 +86,7 @@ public class StreamingJob {
           }
         })
 
-        .addSink(new CouchbaseJsonSink("localhost", "Administrator", "password", "default"))
+        .addSink(new CouchbaseJsonSink("localhost", "Administrator", "password", "sink"))
         //.map(WikipediaEditEvent::getTitle)
         //env.readTextFile("/tmp/flinkin.txt")
         //source
