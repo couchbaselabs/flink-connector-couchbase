@@ -9,6 +9,8 @@
   <version>0.1.0</version>
 
   <name>flink-connector-couchbase</name>
+  <description>Couchbase Source and Sink for Flink</description>
+  <url>http://couchbase.com</url>
 
   <packaging>jar</packaging>
 
@@ -23,8 +25,6 @@
     <!-- When deploying, automatically promote artifacts from staging repository -->
     <autoReleaseAfterClose>true</autoReleaseAfterClose>
   </properties>
-
-  <url>http://couchbase.com</url>
 
   <organization>
     <name>Couchbase, Inc.</name>
