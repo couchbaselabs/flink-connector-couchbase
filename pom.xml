@@ -15,6 +15,9 @@
   <packaging>jar</packaging>
 
   <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
     <flink.version>1.10.1</flink.version>
     <scala.binary.version>2.12</scala.binary.version>
     <java-compat.version>1.8</java-compat.version>
