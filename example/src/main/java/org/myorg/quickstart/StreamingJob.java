@@ -52,16 +52,10 @@ public class StreamingJob {
 //    config.setBoolean(ConfigConstants.LOCAL_START_WEBSERVER, true);
 //    StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(config);
 
-
     final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
     env.enableCheckpointing(SECONDS.toMillis(3));
     env.getCheckpointConfig().setMinPauseBetweenCheckpoints(SECONDS.toMillis(1));
 
-//    env.addSource(new WikipediaEditsSource())
-//        .name("Wikipedia Edits")
-//        .map(edit -> JsonDocument.create(
-//            edit.getTitle(),
-//            JsonObject.fromJson(new ObjectMapper().writeValueAsString(edit))))
     env.setMaxParallelism(2);
     env.setParallelism(2);
 
@@ -87,56 +81,9 @@ public class StreamingJob {
         })
 
         .addSink(new CouchbaseJsonSink("localhost", "Administrator", "password", "sink"))
-        //.map(WikipediaEditEvent::getTitle)
-        //env.readTextFile("/tmp/flinkin.txt")
-        //source
-        //.filter(value -> value.("x"))
         .name("Write to Couchbase");
-
-    //.split()
-    //.writeAsText("/tmp/flinkout.txt", FileSystem.WriteMode.OVERWRITE);
-
-
-    /*
-     * Here, you can start creating your execution plan for Flink.
-     *
-     * Start with getting some data from the environment, like
-     * 	env.readTextFile(textPath);
-     *
-     * then, transform the resulting DataStream<String> using operations
-     * like
-     * 	.filter()
-     * 	.flatMap()
-     * 	.join()
-     * 	.coGroup()
-     *
-     * and many more.
-     * Have a look at the programming guide for the Java API:
-     *
-     * http://flink.apache.org/docs/latest/apis/streaming/index.html
-     *
-     */
 
     // execute program
     env.execute("Flink Streaming Java API Skeleton");
   }
-
-
-  /*
-   .filter(new RichFilterFunction<WikipediaEditEvent>() {
-          private Counter counter;
-
-          @Override
-          public void open(Configuration parameters) throws Exception {
-            this.counter = getRuntimeContext().getMetricGroup().counter("edits");
-          }
-
-          @Override
-          public boolean filter(WikipediaEditEvent value) throws Exception {
-            log.warn("Incrementing counter!");
-            counter.inc();
-            return true;
-          }
-        }
-   */
 }

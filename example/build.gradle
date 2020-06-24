@@ -16,11 +16,11 @@ description = """Flink Quickstart Job"""
 ext {
     javaVersion = '1.8'
     flinkVersion = '1.10.1'
-    scalaBinaryVersion = '2.11'
+    scalaBinaryVersion = '2.12'
     slf4jVersion = '1.7.7'
     log4jVersion = '1.2.17'
+    couchbaseConnectorVersion = '0.1.0-SNAPSHOT'
 }
-
 
 sourceCompatibility = javaVersion
 targetCompatibility = javaVersion
@@ -29,10 +29,6 @@ tasks.withType(JavaCompile) {
 }
 
 applicationDefaultJvmArgs = ["-Dlog4j.configuration=log4j.properties"]
-
-//task wrapper(type: Wrapper) {
-//    gradleVersion = '3.1'
-//}
 
 // declare where to find the dependencies of your project
 repositories {
@@ -66,10 +62,8 @@ dependencies {
     // Dependencies that should be part of the shadow jar, e.g.
     // connectors. These must be in the flinkShadowJar configuration!
     // --------------------------------------------------------------
-    //flinkShadowJar "org.apache.flink:flink-connector-kafka-0.11_${scalaBinaryVersion}:${flinkVersion}"
-    flinkShadowJar "org.apache.flink:flink-connector-wikiedits_${scalaBinaryVersion}:${flinkVersion}"
-    flinkShadowJar 'com.couchbase.client:java-client:3.0.5'
-    flinkShadowJar 'com.couchbase.client:dcp-client:0.28.0'
+    //flinkShadowJar "org.apache.flink:flink-connector-wikiedits_${scalaBinaryVersion}:${flinkVersion}"
+    flinkShadowJar "com.couchbase.client:flink-connector-couchbase_${scalaBinaryVersion}:${couchbaseConnectorVersion}"
 
     compile "log4j:log4j:${log4jVersion}"
     compile "org.slf4j:slf4j-log4j12:${slf4jVersion}"

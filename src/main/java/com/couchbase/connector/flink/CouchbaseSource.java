@@ -24,8 +24,8 @@ import com.couchbase.client.dcp.highlevel.FlowControlMode;
 import com.couchbase.client.dcp.highlevel.Mutation;
 import com.couchbase.client.dcp.highlevel.StreamFailure;
 import com.couchbase.client.dcp.highlevel.StreamOffset;
-import com.couchbase.connector.flink.dcp.DcpVbucketAndOffset;
-import com.couchbase.connector.flink.dcp.PartitionHelper;
+import com.couchbase.connector.flink.internal.dcp.DcpVbucketAndOffset;
+import com.couchbase.connector.flink.internal.dcp.PartitionHelper;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
@@ -76,13 +76,13 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
   // @GuardedBy(checkpointLock)
   private final StreamOffset[] vbucketToStreamOffset = new StreamOffset[MAX_VBUCKETS];
 
-  private final String connectionString;
+  private final String seedNodes;
   private final String username;
   private final String password;
   private final String bucketName;
 
-  public CouchbaseSource(String connectionString, String username, String password, String bucketName) {
-    this.connectionString = requireNonNull(connectionString);
+  public CouchbaseSource(String seedNodes, String username, String password, String bucketName) {
+    this.seedNodes = requireNonNull(seedNodes);
     this.username = requireNonNull(username);
     this.password = requireNonNull(password);
     this.bucketName = requireNonNull(bucketName);
@@ -98,7 +98,7 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
     String subtaskName = getRuntimeContext().getTaskNameWithSubtasks();
     client = Client.builder()
         .userAgent("flink-connector", "0.1.0", subtaskName)
-        .connectionString(connectionString)
+        .seedNodes(seedNodes)
         .credentials(username, password)
         .bucket(bucketName)
         .flowControl(128 * 1024 * 1024)

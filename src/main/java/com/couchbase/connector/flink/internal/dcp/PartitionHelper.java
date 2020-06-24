@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.couchbase.connector.flink.dcp;
+package com.couchbase.connector.flink.internal.dcp;
 
 import org.apache.flink.api.common.functions.RuntimeContext;
 

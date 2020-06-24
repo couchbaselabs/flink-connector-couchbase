@@ -28,13 +28,13 @@ public class CouchbaseDocumentChange {
   private final Type type;
   private final String key;
   private final byte[] content;
-  private final int vbucket;
+  private final int partition;
 
-  public CouchbaseDocumentChange(Type type, String key, int vbucket, byte[] content) {
+  public CouchbaseDocumentChange(Type type, String key, int partition, byte[] content) {
     this.type = requireNonNull(type);
     this.key = requireNonNull(key);
     this.content = content == null ? new byte[0] : content;
-    this.vbucket = vbucket;
+    this.partition = partition;
   }
 
   public boolean isMutation() {
@@ -57,7 +57,7 @@ public class CouchbaseDocumentChange {
     return content;
   }
 
-  public int vbucket() {
-    return vbucket;
+  public int partition() {
+    return partition;
   }
 }
