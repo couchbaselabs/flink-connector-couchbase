@@ -19,7 +19,7 @@ ext {
     scalaBinaryVersion = '2.12'
     slf4jVersion = '1.7.7'
     log4jVersion = '1.2.17'
-    couchbaseConnectorVersion = '0.1.0-SNAPSHOT'
+    couchbaseConnectorVersion = '0.1.0'
 }
 
 sourceCompatibility = javaVersion
