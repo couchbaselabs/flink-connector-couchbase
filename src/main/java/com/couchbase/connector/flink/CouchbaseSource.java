@@ -1,251 +1,434 @@
-/*
- * Copyright 2020 Couchbase, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package com.couchbase.connector.flink;
 
 import com.couchbase.client.dcp.Client;
-import com.couchbase.client.dcp.highlevel.DatabaseChangeListener;
-import com.couchbase.client.dcp.highlevel.Deletion;
-import com.couchbase.client.dcp.highlevel.DocumentChange;
-import com.couchbase.client.dcp.highlevel.FlowControlMode;
-import com.couchbase.client.dcp.highlevel.Mutation;
-import com.couchbase.client.dcp.highlevel.StreamFailure;
-import com.couchbase.client.dcp.highlevel.StreamOffset;
-import com.couchbase.connector.flink.internal.dcp.DcpVbucketAndOffset;
-import com.couchbase.connector.flink.internal.dcp.PartitionHelper;
-import org.apache.flink.api.common.functions.RuntimeContext;
-import org.apache.flink.api.common.state.ListState;
-import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.configuration.Configuration;
+import com.couchbase.client.dcp.highlevel.*;
+import com.couchbase.client.java.json.JsonArray;
+import com.couchbase.client.java.json.JsonObject;
+import org.apache.flink.api.connector.source.*;
+import org.apache.flink.core.io.InputStatus;
+import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.runtime.state.FunctionInitializationContext;
-import org.apache.flink.runtime.state.FunctionSnapshotContext;
-import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+import java.io.IOException;
+import java.util.*;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.TreeMap;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.IntStream;
 
-import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.TimeUnit.SECONDS;
-import static java.util.stream.Collectors.toMap;
+public class CouchbaseSource implements Source<CouchbaseDocumentChange, CouchbaseSource.VBucketSplit, Map<Integer, StreamOffset>> {
+    private List<VBucketSplit> unassignedSplits = Collections.synchronizedList(new LinkedList<>());
+    private VBucketSplit currentSplit;
+    private Client client;
+    private String seedNodes;
+    private String username;
+    private String password;
+    private String bucketName;
+    private String scopeName;
+    private String collectionName;
+    private Counter mutations;
+    private Counter deletions;
+    private Counter expirations;
+    private boolean closed;
+    private Map<Integer, StreamOffset> vbucketOffsets = new ConcurrentHashMap<>();
 
-public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumentChange>
-    implements CheckpointedFunction {
+    public CouchbaseSource(String seedNodes, String username, String password, String bucketName, String scopeName, String collectionName) {
+        this.seedNodes = seedNodes;
+        this.username = username;
+        this.password = password;
+        this.bucketName = bucketName;
+        this.scopeName = scopeName;
+        this.collectionName = collectionName;
+    }
 
-  private static final Logger log = LoggerFactory.getLogger(CouchbaseSource.class);
-  private static final Exception poisonPill = new Exception();
+    public CouchbaseSource(String seedNodes, String username, String password, String bucketName) {
+        this(seedNodes, username, password, bucketName, null, null);
+    }
 
-  private volatile boolean running;
-  private volatile String taskDescription;
+    @Override
+    public Boundedness getBoundedness() {
+        return Boundedness.CONTINUOUS_UNBOUNDED;
+    }
 
-  private transient ListState<DcpVbucketAndOffset> state;
+    @Override
+    public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> createEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext) throws Exception {
+        return new VBucketSplitEnumerator(enumContext);
+    }
 
-  private final BlockingQueue<Throwable> fatalErrorQueue = new LinkedBlockingQueue<>();
+    @Override
+    public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> restoreEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext, Map<Integer, StreamOffset> checkpoint) throws Exception {
+        vbucketOffsets.putAll(checkpoint);
+        return new VBucketSplitEnumerator(enumContext);
+    }
 
-  private transient Counter mutations;
-  private transient Counter deletions;
-  private transient Counter expirations;
-  private Client client;
+    @Override
+    public SimpleVersionedSerializer<VBucketSplit> getSplitSerializer() {
+        return new VBucketSplitSerializer();
+    }
 
-  private transient Object checkpointLock;
+    @Override
+    public SimpleVersionedSerializer<Map<Integer, StreamOffset>> getEnumeratorCheckpointSerializer() {
+        return new CheckpointSerializer();
+    }
 
-  private static final int MAX_VBUCKETS = 1024;
+    @Override
+    public SourceReader<CouchbaseDocumentChange, VBucketSplit> createReader(SourceReaderContext readerContext) throws Exception {
+        return new VBucketSplitReader(readerContext);
+    }
 
-  // @GuardedBy(checkpointLock)
-  private final StreamOffset[] vbucketToStreamOffset = new StreamOffset[MAX_VBUCKETS];
+    private void ensureStarted(SplitEnumeratorContext<VBucketSplit> context) {
+        if (this.client == null) {
+            MetricGroup metrics = context.metricGroup();
+            mutations = metrics.counter("dcpMutations");
+            deletions = metrics.counter("dcpDeletions");
+            expirations = metrics.counter("dcpExpirations");
+            this.client = Client.builder()
+                    .userAgent("flink-connector", "0.2.0")
+                    .seedNodes(this.seedNodes)
+                    .credentials(this.username, this.password)
+                    .bucket(this.bucketName)
+                    .flowControl(128 * 1024 * 1024)
+                    .build();
+            this.client.listener(new DatabaseChangeListener() {
+                @Override
+                public void onFailure(StreamFailure streamFailure) {
+                    StreamFailureEvent event = () -> streamFailure;
+                    IntStream.of(context.currentParallelism())
+                            .forEach(i -> {
+                                context.sendEventToSourceReader(i, event);
+                                context.signalNoMoreSplits(i);
+                            });
+                }
 
-  private final String seedNodes;
-  private final String username;
-  private final String password;
-  private final String bucketName;
+                @Override
+                public void onSnapshot(SnapshotDetails snapshotDetails) {
+                    if (currentSplit != null) {
+                        unassignedSplits.add(currentSplit);
+                    }
+                    currentSplit = new VBucketSplit(
+                            snapshotDetails.getVbucket(),
+                            snapshotDetails.getMarker().getStartSeqno(),
+                            snapshotDetails.getMarker().getEndSeqno()
+                    );
 
-  public CouchbaseSource(String seedNodes, String username, String password, String bucketName) {
-    this.seedNodes = requireNonNull(seedNodes);
-    this.username = requireNonNull(username);
-    this.password = requireNonNull(password);
-    this.bucketName = requireNonNull(bucketName);
-  }
+                    DatabaseChangeListener.super.onSnapshot(snapshotDetails);
+                }
 
-  @Override
-  public void open(Configuration parameters) throws Exception {
-    MetricGroup metrics = getRuntimeContext().getMetricGroup();
-    mutations = metrics.counter("dcpMutations");
-    deletions = metrics.counter("dcpDeletions");
-    expirations = metrics.counter("dcpExpirations");
+                @Override
+                public void onDeletion(Deletion deletion) {
+                    if (deletion.isDueToExpiration()) {
+                        expirations.inc();
+                    } else {
+                        deletions.inc();
+                    }
+                    currentSplit.add(new CouchbaseDocumentChange(
+                            deletion.isDueToExpiration() ? CouchbaseDocumentChange.Type.EXPIRATION : CouchbaseDocumentChange.Type.DELETION,
+                            bucketName,
+                            deletion.getCollection().scope().name(),
+                            deletion.getCollection().name(),
+                            deletion.getKey(),
+                            deletion.getOffset().getVbuuid(),
+                            deletion.getContent(),
+                            deletion.getOffset().getSeqno()
+                    ));
+                    DatabaseChangeListener.super.onDeletion(deletion);
+                }
 
-    String subtaskName = getRuntimeContext().getTaskNameWithSubtasks();
-    client = Client.builder()
-        .userAgent("flink-connector", "0.1.0", subtaskName)
-        .seedNodes(seedNodes)
-        .credentials(username, password)
-        .bucket(bucketName)
-        .flowControl(128 * 1024 * 1024)
-        .build();
-  }
-
-  @Override
-  public void run(SourceContext<CouchbaseDocumentChange> ctx) throws Exception {
-    running = true;
-
-    final RuntimeContext runtime = getRuntimeContext();
-    this.taskDescription = runtime.getTaskNameWithSubtasks();
-    this.checkpointLock = ctx.getCheckpointLock();
-
-    client.listener(new DatabaseChangeListener() {
-      @Override
-      public void onFailure(StreamFailure streamFailure) {
-        fatalErrorQueue.add(streamFailure.getCause());
-      }
-
-      @Override
-      public void onMutation(Mutation mutation) {
-        mutations.inc();
-        onDocumentChange(mutation);
-      }
-
-      @Override
-      public void onDeletion(Deletion deletion) {
-        (deletion.isDueToExpiration() ? expirations : deletions).inc();
-        onDocumentChange(deletion);
-      }
-
-      private void onDocumentChange(DocumentChange change) {
-        CouchbaseDocumentChange.Type type = change.isMutation() ? CouchbaseDocumentChange.Type.MUTATION : CouchbaseDocumentChange.Type.DELETION;
-        final CouchbaseDocumentChange item = new CouchbaseDocumentChange(type, change.getKey(), change.getVbucket(), change.getContent());
-
-        synchronized (ctx.getCheckpointLock()) {
-          ctx.collect(item);
-          vbucketToStreamOffset[change.getVbucket()] = change.getOffset();
+                @Override
+                public void onMutation(Mutation mutation) {
+                    mutations.inc();
+                    currentSplit.add(new CouchbaseDocumentChange(
+                            CouchbaseDocumentChange.Type.MUTATION,
+                            bucketName,
+                            mutation.getCollection().scope().name(),
+                            mutation.getCollection().name(),
+                            mutation.getKey(),
+                            mutation.getOffset().getVbuuid(),
+                            mutation.getContent(),
+                            mutation.getOffset().getSeqno()
+                    ));
+                    DatabaseChangeListener.super.onMutation(mutation);
+                }
+            }, FlowControlMode.AUTOMATIC);
+            this.client.connect().await();
+            this.client.resumeStreaming(vbucketOffsets).await();
         }
-      }
-
-    }, FlowControlMode.AUTOMATIC);
-
-    // todo need a better way to respond to failures here, and make sure cancelling the task
-    // aborts the connection attempt (if it's taking a long time)
-    client.connect().await();
-    final int numPartitions = client.numPartitions();
-
-    final List<Integer> myPartitions = PartitionHelper.getAssignedPartitions(numPartitions, getRuntimeContext());
-    log.info("{} handling partitions: {}", taskDescription, myPartitions);
-
-    final Map<Integer, StreamOffset> resumeOffsets = myPartitions.stream()
-        .collect(toMap(p -> p, p -> Optional.ofNullable(vbucketToStreamOffset[p]).orElse(StreamOffset.ZERO)));
-
-    if (resumeOffsets.isEmpty()) {
-      // Shouldn't happen unless there are more subtasks than vbuckets
-      log.warn("No work for {}", taskDescription);
-      return;
     }
 
-    client.resumeStreaming(resumeOffsets).await();
+    public interface StreamFailureEvent extends SourceEvent {
+        StreamFailure failure();
+    }
 
-    try {
-      while (running) {
-        Throwable t = fatalErrorQueue.take();
-        if (t == poisonPill) {
-          break;
+    public static class VBucketSplit implements SourceSplit {
+        private final long startOffset;
+        private final String id;
+
+        private final List<CouchbaseDocumentChange> changes = new ArrayList<>();
+        private final int vbuuid;
+        private final long endOffset;
+
+        public VBucketSplit(int vbuuid, long start, long end) {
+            this.vbuuid = vbuuid;
+            this.startOffset = start;
+            this.endOffset = end;
+            this.id = String.format("%d:%d-%d", vbuuid, start, end);
         }
-        if (t instanceof Exception) {
-          throw (Exception) t;
+
+        public static VBucketSplit get(String id) {
+            return null;
         }
-        if (t instanceof Error) {
-          throw (Error) t;
+
+        @Override
+        public String splitId() {
+            return id;
         }
-        throw new RuntimeException(t);
-      }
-    } finally {
-      disconnectDcpClient();
+
+        public boolean isEmpty() {
+            return changes.isEmpty();
+        }
+
+        public Iterator<CouchbaseDocumentChange> iterator() {
+            return changes.iterator();
+        }
+
+        public void add(CouchbaseDocumentChange change) {
+            changes.add(change);
+        }
+
+        public int vbuuid() {
+            return vbuuid;
+        }
+
+        public long endOffset() {
+            return endOffset;
+        }
+
+        public long startOffset() {
+            return startOffset;
+        }
     }
 
-  }
+    public class VBucketSplitEnumerator implements SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> {
 
-  @Override
-  public void cancel() {
-    running = false;
-    fatalErrorQueue.offer(poisonPill);
-  }
+        private SplitEnumeratorContext<VBucketSplit> context;
 
-  private void disconnectDcpClient() {
-    try {
-      log.info("Disconnecting Couchbase DCP connection...");
-      client.disconnect().await(5, SECONDS);
-      log.info("DCP disconnection complete.");
-
-    } catch (Exception e) {
-      log.warn("DCP client disconnection failed or timed out.", e);
-    }
-  }
-
-  @Override
-  public void snapshotState(FunctionSnapshotContext context) throws Exception {
-    if (!running) {
-      log.debug("snapshotState() called on closed source");
-      return;
-    }
-
-    if (!Thread.holdsLock(checkpointLock)) {
-      throw new AssertionError("Thread didn't hold checkpoint lock!");
-    }
-
-    state.clear();
-    for (int i = 0; i < vbucketToStreamOffset.length; i++) {
-      StreamOffset offset = vbucketToStreamOffset[i];
-      if (offset != null) {
-        state.add(new DcpVbucketAndOffset(i, offset));
-        log.debug("snapshot state for vbucket {}: {}", i, offset);
-      }
-    }
-  }
-
-  @Override
-  public void initializeState(FunctionInitializationContext context) throws Exception {
-    state = context.getOperatorStateStore().getUnionListState(
-        new ListStateDescriptor<>("couchbase-stream-offsets", TypeInformation.of(DcpVbucketAndOffset.class)));
+        private VBucketSplitEnumerator(SplitEnumeratorContext<VBucketSplit> context) {
+            this.context = context;
+        }
 
 
-    if (!context.isRestored()) {
-      log.info("No restore state for CouchbaseSource.");
-      return;
+        @Override
+        public void start() {
+            ensureStarted(context);
+        }
+
+        @Override
+        public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
+            if (!unassignedSplits.isEmpty()) {
+                context.assignSplit(unassignedSplits.remove(0), subtaskId);
+            } else if (closed) {
+                context.signalNoMoreSplits(subtaskId);
+            }
+        }
+
+        @Override
+        public void addSplitsBack(List<VBucketSplit> splits, int subtaskId) {
+            unassignedSplits.addAll(0, splits);
+        }
+
+        @Override
+        public void addReader(int subtaskId) {
+
+        }
+
+        @Override
+        public Map<Integer, StreamOffset> snapshotState(long checkpointId) throws Exception {
+            return new HashMap<>(vbucketOffsets);
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (client != null) {
+                client.close();
+            }
+            closed = true;
+        }
     }
 
-    if (checkpointLock == null) {
-      throw new AssertionError("oops, checkpoint lock not initialized yet");
+    public static class VBucketSplitSerializer implements SimpleVersionedSerializer<VBucketSplit> {
+
+        @Override
+        public int getVersion() {
+            return 0;
+        }
+
+        @Override
+        public byte[] serialize(VBucketSplit obj) throws IOException {
+            JsonObject result = JsonObject.create();
+            result.put("vbuuid", obj.vbuuid());
+            result.put("startOffset", obj.startOffset());
+            result.put("endOffset", obj.endOffset());
+            JsonArray changes = JsonArray.create();
+            result.put("changes", changes);
+            obj.iterator().forEachRemaining(documentChange -> {
+                JsonObject change = JsonObject.create();
+                changes.add(change);
+                change.put("seqno", documentChange.seqno());
+                change.put("partition", documentChange.partition());
+                change.put("type", documentChange.type().name());
+                change.put("key", documentChange.key());
+                change.put("content", Base64.getEncoder().encodeToString(documentChange.content()));
+                change.put("bucket", documentChange.bucket());
+                change.put("scope", documentChange.scope());
+                change.put("collection", documentChange.collection());
+            });
+
+            return result.toBytes();
+        }
+
+        @Override
+        public VBucketSplit deserialize(int version, byte[] serialized) throws IOException {
+            JsonObject split = JsonObject.fromJson(serialized);
+            VBucketSplit result = new VBucketSplit(
+                    split.getInt("vbuuid"),
+                    split.getLong("startOffset"),
+                    split.getLong("endOffset")
+            );
+
+            JsonArray changes = split.getArray("changes");
+            changes.forEach(c -> {
+                JsonObject change = (JsonObject) c;
+                result.add(new CouchbaseDocumentChange(
+                        CouchbaseDocumentChange.Type.valueOf(change.getString("type")),
+                        change.getString("bucket"),
+                        change.getString("scope"),
+                        change.getString("collection"),
+                        change.getString("key"),
+                        change.getLong("partition"),
+                        Base64.getDecoder().decode(change.getString("content")),
+                        change.getLong("seqno")
+                ));
+            });
+            return result;
+        }
     }
 
-    synchronized (checkpointLock) {
-      state.get().forEach(i -> vbucketToStreamOffset[i.getVbucket()] = i.getOffset());
+    private class CheckpointSerializer implements SimpleVersionedSerializer<Map<Integer, StreamOffset>> {
+        @Override
+        public int getVersion() {
+            return 0;
+        }
+
+        @Override
+        public byte[] serialize(Map<Integer, StreamOffset> obj) throws IOException {
+            JsonObject result = JsonObject.create();
+            obj.forEach((vb, offset) -> {
+                JsonObject ofs = JsonObject.create();
+                result.put(String.valueOf(vb), ofs);
+                ofs.put("vbuuid", offset.getVbuuid());
+                ofs.put("seqno", offset.getSeqno());
+                ofs.put("cuuid", offset.getCollectionsManifestUid());
+            });
+            return result.toBytes();
+        }
+
+        @Override
+        public Map<Integer, StreamOffset> deserialize(int version, byte[] serialized) throws IOException {
+            Map<Integer, StreamOffset> result = new HashMap<>();
+            JsonObject marker = JsonObject.fromJson(serialized);
+            marker.toMap().forEach((s, o) -> {
+                JsonObject obj = (JsonObject) o;
+                result.put(Integer.valueOf(s), new StreamOffset(
+                        obj.getLong("vbuuid"),
+                        obj.getLong("seqno"),
+                        SnapshotMarker.NONE,
+                        obj.getLong("cuuid")
+                ));
+            });
+            return result;
+        }
     }
 
-    Map<Integer, StreamOffset> display = new TreeMap<>(); // sorted just for pretty output
-    for (int i = 0; i < vbucketToStreamOffset.length; i++) {
-      if (vbucketToStreamOffset[i] != null) {
-        display.put(i, vbucketToStreamOffset[i]);
+    private class VBucketSplitReader implements SourceReader<CouchbaseDocumentChange, VBucketSplit> {
+        private final SourceReaderContext context;
+        private final List<VBucketSplit> splits = new ArrayList<>();
+        private VBucketSplit current;
+        private boolean noMoreSplits;
+        private Iterator<CouchbaseDocumentChange> iterator;
+        private CompletableFuture<Void> availability = new CompletableFuture<>();
 
-      }
-      log.debug("Restore state for CouchbaseSource: {}", display);
+        public VBucketSplitReader(SourceReaderContext readerContext) {
+            this.context = readerContext;
+        }
+
+        @Override
+        public void start() {
+            if (splits.isEmpty()) {
+                context.sendSplitRequest();
+            }
+        }
+
+        @Override
+        public InputStatus pollNext(ReaderOutput<CouchbaseDocumentChange> output) throws Exception {
+            while (this.iterator == null || !this.iterator.hasNext()) {
+                if (this.current != null) {
+                    // done processing a split
+                    vbucketOffsets.put(this.current.vbuuid(), new StreamOffset(
+                            this.current.vbuuid(),
+                            this.current.endOffset(),
+                            new SnapshotMarker(this.current.startOffset(), this.current.endOffset()),
+                            0
+                    ));
+                }
+                if (splits.isEmpty()) {
+                    if (noMoreSplits) {
+                        return InputStatus.END_OF_INPUT;
+                    }
+                    context.sendSplitRequest();
+                    return InputStatus.NOTHING_AVAILABLE;
+                } else {
+                    this.current = splits.remove(0);
+                    this.iterator = this.current.iterator();
+                }
+            }
+
+            output.collect(this.iterator.next());
+            return InputStatus.MORE_AVAILABLE;
+        }
+
+        @Override
+        public List<VBucketSplit> snapshotState(long checkpointId) {
+            List<VBucketSplit> snapshot = new ArrayList<>();
+            if (this.current != null) {
+                snapshot.add(current);
+            }
+            snapshot.addAll(splits);
+            return snapshot;
+        }
+
+        @Override
+        public CompletableFuture<Void> isAvailable() {
+            return this.availability;
+        }
+
+        @Override
+        public void addSplits(List<VBucketSplit> splits) {
+            this.splits.addAll(splits);
+            if (!availability.isDone()) {
+                availability.complete(null);
+            }
+        }
+
+        @Override
+        public void notifyNoMoreSplits() {
+            noMoreSplits = true;
+        }
+
+        @Override
+        public void close() throws Exception {
+
+        }
     }
-  }
 }
