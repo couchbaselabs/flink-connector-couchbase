@@ -9,6 +9,8 @@ import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.MetricGroup;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -19,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.IntStream;
 
 public class CouchbaseSource implements Source<CouchbaseDocumentChange, CouchbaseSource.VBucketSplit, Map<Integer, StreamOffset>> {
+    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseSource.class);
     private List<VBucketSplit> unassignedSplits = Collections.synchronizedList(new LinkedList<>());
     private VBucketSplit currentSplit;
     private Client client;
@@ -34,6 +37,9 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
     private boolean closed;
     private Map<Integer, StreamOffset> vbucketOffsets = new ConcurrentHashMap<>();
 
+    private Boundedness boundedness = Boundedness.CONTINUOUS_UNBOUNDED;
+    private long maxEvents = -1L;
+
     public CouchbaseSource(String seedNodes, String username, String password, String bucketName, String scopeName, String collectionName) {
         this.seedNodes = seedNodes;
         this.username = username;
@@ -41,6 +47,7 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
         this.bucketName = bucketName;
         this.scopeName = scopeName;
         this.collectionName = collectionName;
+        LOG.debug("Initialized couchbase datasource with seed nodes '{}'", seedNodes);
     }
 
     public CouchbaseSource(String seedNodes, String username, String password, String bucketName) {
@@ -49,7 +56,17 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
 
     @Override
     public Boundedness getBoundedness() {
-        return Boundedness.CONTINUOUS_UNBOUNDED;
+        return boundedness;
+    }
+
+    public CouchbaseSource setBoundedness(Boundedness boundedness) {
+        this.boundedness = boundedness;
+        return this;
+    }
+
+    public CouchbaseSource setMaxEvents(long max) {
+        this.maxEvents = max;
+        return this;
     }
 
     @Override
@@ -80,10 +97,8 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
 
     private void ensureStarted(SplitEnumeratorContext<VBucketSplit> context) {
         if (this.client == null) {
-            MetricGroup metrics = context.metricGroup();
-            mutations = metrics.counter("dcpMutations");
-            deletions = metrics.counter("dcpDeletions");
-            expirations = metrics.counter("dcpExpirations");
+            LOG.info("Starting couchbase source with seed nodes '{}'", seedNodes);
+            ensureMetrics(context);
             this.client = Client.builder()
                     .userAgent("flink-connector", "0.2.0")
                     .seedNodes(this.seedNodes)
@@ -94,6 +109,7 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
             this.client.listener(new DatabaseChangeListener() {
                 @Override
                 public void onFailure(StreamFailure streamFailure) {
+                    LOG.error("DCP stream failure: '{}'", streamFailure.getCause().getMessage(), streamFailure.getCause());
                     StreamFailureEvent event = () -> streamFailure;
                     IntStream.of(context.currentParallelism())
                             .forEach(i -> {
@@ -104,6 +120,7 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
 
                 @Override
                 public void onSnapshot(SnapshotDetails snapshotDetails) {
+                    LOG.debug("received DCP snapshot: {} - {}", snapshotDetails.getMarker().getStartSeqno(), snapshotDetails.getMarker().getEndSeqno());
                     if (currentSplit != null) {
                         unassignedSplits.add(currentSplit);
                     }
@@ -119,9 +136,11 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
                 @Override
                 public void onDeletion(Deletion deletion) {
                     if (deletion.isDueToExpiration()) {
-                        expirations.inc();
+                        LOG.debug("received DCP expiration for document '{}'", deletion.getQualifiedKey());
+                        incExpirations(context);
                     } else {
-                        deletions.inc();
+                        LOG.debug("received DCP deletion for document '{}'", deletion.getQualifiedKey());
+                        incDeletions(context);
                     }
                     currentSplit.add(new CouchbaseDocumentChange(
                             deletion.isDueToExpiration() ? CouchbaseDocumentChange.Type.EXPIRATION : CouchbaseDocumentChange.Type.DELETION,
@@ -133,12 +152,16 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
                             deletion.getContent(),
                             deletion.getOffset().getSeqno()
                     ));
+                    if (maxEvents > -1 && maxEvents < mutations.getCount() + expirations.getCount() + deletions.getCount()) {
+                        close();
+                    }
                     DatabaseChangeListener.super.onDeletion(deletion);
                 }
 
                 @Override
                 public void onMutation(Mutation mutation) {
-                    mutations.inc();
+                    LOG.debug("Received DCP mutation for document '{}'", mutation.getQualifiedKey());
+                    incMutations(context);
                     currentSplit.add(new CouchbaseDocumentChange(
                             CouchbaseDocumentChange.Type.MUTATION,
                             bucketName,
@@ -149,12 +172,63 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
                             mutation.getContent(),
                             mutation.getOffset().getSeqno()
                     ));
+                    if (maxEvents > -1 && maxEvents < mutations.getCount() + expirations.getCount() + deletions.getCount()) {
+                        close();
+                    }
                     DatabaseChangeListener.super.onMutation(mutation);
                 }
             }, FlowControlMode.AUTOMATIC);
-            this.client.connect().await();
-            this.client.resumeStreaming(vbucketOffsets).await();
+            try {
+                this.client.connect().await();
+                this.client.resumeStreaming(vbucketOffsets).await();
+                LOG.info("connected DCP stream from '{}'", seedNodes);
+            } catch (Exception e) {
+                this.client = null;
+                LOG.error("failed to connect DCP stream from '{}'", seedNodes, e);
+                throw new RuntimeException(e);
+            }
         }
+    }
+
+    private void incMutations(SplitEnumeratorContext<VBucketSplit> context) {
+        ensureMetrics(context);
+        if (mutations != null) {
+            mutations.inc();
+        }
+    }
+
+    private void incDeletions(SplitEnumeratorContext<VBucketSplit> context) {
+        ensureMetrics(context);
+        if (deletions != null) {
+            deletions.inc();
+        }
+    }
+
+    private void incExpirations(SplitEnumeratorContext<VBucketSplit> context) {
+        ensureMetrics(context);
+        if (expirations != null) {
+            expirations.inc();
+        }
+    }
+
+    private void ensureMetrics(SplitEnumeratorContext<VBucketSplit> context) {
+        if (mutations == null) {
+            MetricGroup metrics = context.metricGroup();
+            if (metrics != null) {
+                mutations = metrics.counter("dcpMutations");
+                deletions = metrics.counter("dcpDeletions");
+                expirations = metrics.counter("dcpExpirations");
+            }
+        }
+    }
+
+    private void close() {
+        if (this.client != null) {
+            LOG.info("disconnected DCP stream from '{}'", seedNodes);
+            this.client.disconnect();
+            this.client = null;
+        }
+        closed = true;
     }
 
     public interface StreamFailureEvent extends SourceEvent {
