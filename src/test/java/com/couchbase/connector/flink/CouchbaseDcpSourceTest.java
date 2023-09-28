@@ -26,8 +26,8 @@ import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.stream.IntStream;
 
-public class CouchbaseSourceTest {
-    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseSourceTest.class);
+public class CouchbaseDcpSourceTest {
+    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseDcpSourceTest.class);
     @ClassRule
     public static CouchbaseContainer couchbase = new CouchbaseContainer("couchbase/server:enterprise-7.2.0")
             .withBucket(new BucketDefinition("flink-test"))
@@ -110,7 +110,7 @@ public class CouchbaseSourceTest {
 
     @Test
     public void couchbaseSource() throws Exception {
-         CouchbaseSource source = new CouchbaseSource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword(), "flink-test")
+         CouchbaseDcpSource source = new CouchbaseDcpSource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword(), "flink-test")
                  .setBoundedness(Boundedness.BOUNDED)
                  .setMaxEvents(docnum);
 
