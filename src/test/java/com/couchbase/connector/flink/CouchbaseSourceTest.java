@@ -5,6 +5,7 @@ import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.Collection;
 import com.couchbase.client.java.Scope;
 import com.couchbase.connector.flink.util.TestSink;
+import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
@@ -17,7 +18,6 @@ import org.junit.ClassRule;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.couchbase.BucketDefinition;
 import org.testcontainers.couchbase.CouchbaseContainer;
 import org.testcontainers.couchbase.CouchbaseService;
@@ -29,10 +29,11 @@ import java.util.stream.IntStream;
 public class CouchbaseSourceTest {
     private static final Logger LOG = LoggerFactory.getLogger(CouchbaseSourceTest.class);
     @ClassRule
-    public static GenericContainer couchbase = new CouchbaseContainer("couchbase/server:enterprise-7.2.0")
+    public static CouchbaseContainer couchbase = new CouchbaseContainer("couchbase/server:enterprise-7.2.0")
             .withBucket(new BucketDefinition("flink-test"))
             .withEnabledServices(CouchbaseService.KV, CouchbaseService.INDEX, CouchbaseService.QUERY)
             .withStartupTimeout(Duration.of(1, ChronoUnit.MINUTES))
+            .withStartupAttempts(3)
             .withExposedPorts(
                     9119, 9998, 11213, 21200, 21300,
 
@@ -41,7 +42,7 @@ public class CouchbaseSourceTest {
                     9120, 9121, 9122, 9130, 9999, 11209, 11210, 21100,
 
                     8091, 8092, 8093, 8094, 8095, 8096, 8097, 9123, 9140, 11120, 11280
-            )
+           )
             .withCredentials("Administrator", "password");
 
     @ClassRule
@@ -52,38 +53,54 @@ public class CouchbaseSourceTest {
                     .build()
     );
 
-    private static CouchbaseSource subject = new CouchbaseSource(
-            "localhost",
-            "Administrator",
-            "password",
-            "flink-test"
-    );
-
-    private static final int docnum = (int) (Math.random() * 1000);
+    private static final int docnum = (int) (Math.random() * 100);
     @BeforeClass
     public static void setUp() {
-        LOG.info("Initializing test data...");
-        int attempts = 10;
-        for (; attempts >= 0; attempts--) {
+        LOG.info("Starting couchbase container.");
+        couchbase.start();
+    }
+
+    private void sendTestDocuments() {
+        new Thread(() -> {
             try {
-                Thread.sleep(10000);
-                Cluster cluster = Cluster.connect("localhost", "Administrator", "password");
-                Bucket testBucket = cluster.bucket("flink-test");
-                Scope testScope = testBucket.scope("_default");
-                Collection testCollection = testScope.collection("_default");
-                IntStream.of(docnum)
-                        .forEach(i -> testCollection.insert(String.valueOf(i), i % 2));
-                break;
-            } catch (Exception e) {
-                LOG.error("Failed ot initialize test data, attempts left: " + attempts, e);
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
-        }
+            LOG.info("Sending test data...");
+            int attempts = 10;
+            Throwable lastError = null;
+            for (; attempts > 0; --attempts) {
+                try {
+                    Cluster cluster = Cluster.connect(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword());
+                    Bucket testBucket = cluster.bucket("flink-test");
+                    testBucket.waitUntilReady(Duration.of(1, ChronoUnit.MINUTES));
+                    Scope testScope = testBucket.scope("_default");
+                    Collection testCollection = testScope.collection("_default");
+                    IntStream.range(0, docnum + 1)
+                            .forEach(i -> testCollection.insert(String.valueOf(i), i % 2));
+                    lastError = null;
+                    break;
+                } catch (Throwable e) {
+                    while (e.getCause() != null && e.getCause() != e) {
+                        e = e.getCause();
+                    }
+                    LOG.error("Failed to send test data ({}), attempts left: {}", e.getLocalizedMessage(), attempts);
+                    lastError = e;
+                    try {
+                        Thread.sleep(30000);
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+            }
 
-        if (attempts == 0) {
-            throw new RuntimeException("Exhausted test data initialization attempts");
-        }
+            if (attempts == 0 || lastError != null) {
+                throw new RuntimeException("Gave up sending test data", lastError);
+            }
 
-        LOG.info("Initialized test data");
+            LOG.info("Sent test data");
+        }).start();
     }
 
     @AfterClass
@@ -93,7 +110,7 @@ public class CouchbaseSourceTest {
 
     @Test
     public void couchbaseSource() throws Exception {
-         CouchbaseSource source = new CouchbaseSource("localhost", "Administrator", "password", "flink-test")
+         CouchbaseSource source = new CouchbaseSource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword(), "flink-test")
                  .setBoundedness(Boundedness.BOUNDED)
                  .setMaxEvents(docnum);
 
@@ -105,11 +122,13 @@ public class CouchbaseSourceTest {
 
         TestSink<CouchbaseDocumentChange> resultSink = new TestSink<>();
 
+        // just going with the flow...
         env.fromSource(source, WatermarkStrategy.noWatermarks(), "couchbase_dcp_stream")
                 .addSink(resultSink);
 
-        env.execute("couchbase_dcp_source_test");
+        sendTestDocuments();
+        JobExecutionResult result = env.execute("couchbase_dcp_source_test").getJobExecutionResult();
 
-        Assert.assertEquals("Invalid document count", docnum, resultSink.size());
+        Assert.assertEquals("Invalid document count", docnum, resultSink.getResults().size());
     }
 }

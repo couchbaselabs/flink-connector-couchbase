@@ -1,7 +1,21 @@
 package com.couchbase.connector.flink;
 
 import com.couchbase.client.dcp.Client;
+import com.couchbase.client.dcp.ControlEventHandler;
+import com.couchbase.client.dcp.DataEventHandler;
+import com.couchbase.client.dcp.StreamFrom;
+import com.couchbase.client.dcp.StreamTo;
+import com.couchbase.client.dcp.deps.io.netty.buffer.ByteBuf;
 import com.couchbase.client.dcp.highlevel.*;
+import com.couchbase.client.dcp.highlevel.internal.CollectionIdAndKey;
+import com.couchbase.client.dcp.highlevel.internal.CollectionsManifest;
+import com.couchbase.client.dcp.message.DcpControlRequest;
+import com.couchbase.client.dcp.message.DcpDeletionMessage;
+import com.couchbase.client.dcp.message.DcpExpirationMessage;
+import com.couchbase.client.dcp.message.DcpMutationMessage;
+import com.couchbase.client.dcp.message.DcpSnapshotMarkerRequest;
+import com.couchbase.client.dcp.message.MessageUtil;
+import com.couchbase.client.dcp.transport.netty.ChannelFlowController;
 import com.couchbase.client.java.json.JsonArray;
 import com.couchbase.client.java.json.JsonObject;
 import org.apache.flink.api.connector.source.*;
@@ -18,9 +32,10 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-public class CouchbaseSource implements Source<CouchbaseDocumentChange, CouchbaseSource.VBucketSplit, Map<Integer, StreamOffset>> {
+public class CouchbaseSource implements Source<CouchbaseDocumentChange, CouchbaseSource.VBucketSplit, Map<Integer, StreamOffset>>, DataEventHandler, ControlEventHandler {
     private static final Logger LOG = LoggerFactory.getLogger(CouchbaseSource.class);
     private List<VBucketSplit> unassignedSplits = Collections.synchronizedList(new LinkedList<>());
     private VBucketSplit currentSplit;
@@ -31,14 +46,20 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
     private String bucketName;
     private String scopeName;
     private String collectionName;
-    private Counter mutations;
-    private Counter deletions;
-    private Counter expirations;
+    private Counter mutationCounter;
+
+    private long mutations;
+    private Counter deletionCounter;
+    private long deletions;
+    private Counter expirationCounter;
+    private long expirations;
     private boolean closed;
     private Map<Integer, StreamOffset> vbucketOffsets = new ConcurrentHashMap<>();
-
+    private SnapshotMarker currentMarker = null;
     private Boundedness boundedness = Boundedness.CONTINUOUS_UNBOUNDED;
     private long maxEvents = -1L;
+    private SplitEnumeratorContext<VBucketSplit> context;
+    private ArrayList<Integer> waitingForSplits = new ArrayList<>();
 
     public CouchbaseSource(String seedNodes, String username, String password, String bucketName, String scopeName, String collectionName) {
         this.seedNodes = seedNodes;
@@ -59,23 +80,28 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
         return boundedness;
     }
 
-    public CouchbaseSource setBoundedness(Boundedness boundedness) {
+    CouchbaseSource setBoundedness(Boundedness boundedness) {
         this.boundedness = boundedness;
+        LOG.debug("Boundedness set to {}", boundedness);
         return this;
     }
 
     public CouchbaseSource setMaxEvents(long max) {
+        LOG.debug("Max events limited to {}", max);
+        setBoundedness(Boundedness.BOUNDED);
         this.maxEvents = max;
         return this;
     }
 
     @Override
     public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> createEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext) throws Exception {
+        LOG.debug("Creating new Enumerator");
         return new VBucketSplitEnumerator(enumContext);
     }
 
     @Override
     public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> restoreEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext, Map<Integer, StreamOffset> checkpoint) throws Exception {
+        LOG.debug("Restored offsets: {}", checkpoint);
         vbucketOffsets.putAll(checkpoint);
         return new VBucketSplitEnumerator(enumContext);
     }
@@ -96,6 +122,7 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
     }
 
     private void ensureStarted(SplitEnumeratorContext<VBucketSplit> context) {
+        this.context = context;
         if (this.client == null) {
             LOG.info("Starting couchbase source with seed nodes '{}'", seedNodes);
             ensureMetrics(context);
@@ -106,82 +133,17 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
                     .bucket(this.bucketName)
                     .flowControl(128 * 1024 * 1024)
                     .build();
-            this.client.listener(new DatabaseChangeListener() {
-                @Override
-                public void onFailure(StreamFailure streamFailure) {
-                    LOG.error("DCP stream failure: '{}'", streamFailure.getCause().getMessage(), streamFailure.getCause());
-                    StreamFailureEvent event = () -> streamFailure;
-                    IntStream.of(context.currentParallelism())
-                            .forEach(i -> {
-                                context.sendEventToSourceReader(i, event);
-                                context.signalNoMoreSplits(i);
-                            });
-                }
-
-                @Override
-                public void onSnapshot(SnapshotDetails snapshotDetails) {
-                    LOG.debug("received DCP snapshot: {} - {}", snapshotDetails.getMarker().getStartSeqno(), snapshotDetails.getMarker().getEndSeqno());
-                    if (currentSplit != null) {
-                        unassignedSplits.add(currentSplit);
-                    }
-                    currentSplit = new VBucketSplit(
-                            snapshotDetails.getVbucket(),
-                            snapshotDetails.getMarker().getStartSeqno(),
-                            snapshotDetails.getMarker().getEndSeqno()
-                    );
-
-                    DatabaseChangeListener.super.onSnapshot(snapshotDetails);
-                }
-
-                @Override
-                public void onDeletion(Deletion deletion) {
-                    if (deletion.isDueToExpiration()) {
-                        LOG.debug("received DCP expiration for document '{}'", deletion.getQualifiedKey());
-                        incExpirations(context);
-                    } else {
-                        LOG.debug("received DCP deletion for document '{}'", deletion.getQualifiedKey());
-                        incDeletions(context);
-                    }
-                    currentSplit.add(new CouchbaseDocumentChange(
-                            deletion.isDueToExpiration() ? CouchbaseDocumentChange.Type.EXPIRATION : CouchbaseDocumentChange.Type.DELETION,
-                            bucketName,
-                            deletion.getCollection().scope().name(),
-                            deletion.getCollection().name(),
-                            deletion.getKey(),
-                            deletion.getOffset().getVbuuid(),
-                            deletion.getContent(),
-                            deletion.getOffset().getSeqno()
-                    ));
-                    if (maxEvents > -1 && maxEvents < mutations.getCount() + expirations.getCount() + deletions.getCount()) {
-                        close();
-                    }
-                    DatabaseChangeListener.super.onDeletion(deletion);
-                }
-
-                @Override
-                public void onMutation(Mutation mutation) {
-                    LOG.debug("Received DCP mutation for document '{}'", mutation.getQualifiedKey());
-                    incMutations(context);
-                    currentSplit.add(new CouchbaseDocumentChange(
-                            CouchbaseDocumentChange.Type.MUTATION,
-                            bucketName,
-                            mutation.getCollection().scope().name(),
-                            mutation.getCollection().name(),
-                            mutation.getKey(),
-                            mutation.getOffset().getVbuuid(),
-                            mutation.getContent(),
-                            mutation.getOffset().getSeqno()
-                    ));
-                    if (maxEvents > -1 && maxEvents < mutations.getCount() + expirations.getCount() + deletions.getCount()) {
-                        close();
-                    }
-                    DatabaseChangeListener.super.onMutation(mutation);
-                }
-            }, FlowControlMode.AUTOMATIC);
+            this.client.dataEventHandler(this);
+            this.client.controlEventHandler(this);
             try {
                 this.client.connect().await();
-                this.client.resumeStreaming(vbucketOffsets).await();
-                LOG.info("connected DCP stream from '{}'", seedNodes);
+                if (!vbucketOffsets.isEmpty()) {
+                    this.client.resumeStreaming(vbucketOffsets).await();
+                } else {
+                    this.client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).await();
+                    this.client.startStreaming().await();
+                }
+                LOG.info("connected DCP stream from '{}' with offsets {}", seedNodes, vbucketOffsets);
             } catch (Exception e) {
                 this.client = null;
                 LOG.error("failed to connect DCP stream from '{}'", seedNodes, e);
@@ -192,43 +154,126 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
 
     private void incMutations(SplitEnumeratorContext<VBucketSplit> context) {
         ensureMetrics(context);
-        if (mutations != null) {
-            mutations.inc();
+        if (mutationCounter != null) {
+            mutationCounter.inc();
+        }
+        if (maxEvents > -1L) {
+            mutations++;
         }
     }
 
     private void incDeletions(SplitEnumeratorContext<VBucketSplit> context) {
         ensureMetrics(context);
-        if (deletions != null) {
-            deletions.inc();
+        if (deletionCounter != null) {
+            deletionCounter.inc();
+        }
+        if (maxEvents > -1L) {
+            deletions++;
         }
     }
 
     private void incExpirations(SplitEnumeratorContext<VBucketSplit> context) {
         ensureMetrics(context);
-        if (expirations != null) {
-            expirations.inc();
+        if (expirationCounter != null) {
+            expirationCounter.inc();
+        }
+        if (maxEvents > -1L) {
+            expirations++;
         }
     }
 
     private void ensureMetrics(SplitEnumeratorContext<VBucketSplit> context) {
-        if (mutations == null) {
+        if (mutationCounter == null) {
             MetricGroup metrics = context.metricGroup();
             if (metrics != null) {
-                mutations = metrics.counter("dcpMutations");
-                deletions = metrics.counter("dcpDeletions");
-                expirations = metrics.counter("dcpExpirations");
+                mutationCounter = metrics.counter("dcpMutations");
+                deletionCounter = metrics.counter("dcpDeletions");
+                expirationCounter = metrics.counter("dcpExpirations");
             }
         }
     }
 
     private void close() {
         if (this.client != null) {
+            this.client.close();
             LOG.info("disconnected DCP stream from '{}'", seedNodes);
-            this.client.disconnect();
             this.client = null;
         }
         closed = true;
+        if (!waitingForSplits.isEmpty()) {
+            waitingForSplits.forEach(i -> context.signalNoMoreSplits(i));
+        }
+    }
+
+    @Override
+    public void onEvent(ChannelFlowController flowController, ByteBuf event) {
+        if (DcpMutationMessage.is(event)) {
+            deliverEvent(CouchbaseDocumentChange.Type.MUTATION, event);
+            incMutations(context);
+        } else if (DcpDeletionMessage.is(event)) {
+            deliverEvent(CouchbaseDocumentChange.Type.DELETION, event);
+            incDeletions(context);
+        } else if (DcpExpirationMessage.is(event)) {
+            deliverEvent(CouchbaseDocumentChange.Type.EXPIRATION, event);
+            incExpirations(context);
+        } else if (DcpSnapshotMarkerRequest.is(event)) {
+            LOG.debug("received DCP snapshot for vbucket {}: {} - {}", MessageUtil.getVbucket(event), DcpSnapshotMarkerRequest.startSeqno(event), DcpSnapshotMarkerRequest.endSeqno(event));
+            if (currentSplit != null) {
+                if (!waitingForSplits.isEmpty()) {
+                    int subtask = waitingForSplits.remove(0);
+                    context.assignSplit(currentSplit, subtask);
+                    LOG.debug("Directly assigned vbucket {} split {} - {} to waiting subtask {}", currentSplit.vbuuid(), currentSplit.startOffset(), currentSplit.endOffset(), subtask);
+                } else {
+                    unassignedSplits.add(currentSplit);
+                }
+            }
+            currentSplit = new VBucketSplit(
+                    MessageUtil.getVbucket(event),
+                    DcpSnapshotMarkerRequest.startSeqno(event),
+                    DcpSnapshotMarkerRequest.endSeqno(event)
+            );
+            currentMarker = new SnapshotMarker(DcpSnapshotMarkerRequest.startSeqno(event), DcpSnapshotMarkerRequest.endSeqno(event));
+
+        } else {
+            LOG.info("Unknown DCP message type: {} {}", event.getByte(0), event.getByte(1));
+        }
+
+        flowController.ack(event);
+        event.release();
+
+        if (maxEvents > -1 && maxEvents < mutations + expirations + deletions) {
+            LOG.debug("Max events limit ({}) reached (mutations: {}, expirations: {}, deletions: {})", maxEvents, mutations, expirations, deletions);
+            close();
+        }
+    }
+
+    private void deliverEvent(CouchbaseDocumentChange.Type type, ByteBuf event) {
+        short vbucket = MessageUtil.getVbucket(event);
+        long seqNo = event.getLong(24);
+
+        CollectionsManifest manifest = this.client.sessionState().get(vbucket).getCollectionsManifest();
+
+        CollectionIdAndKey ciak = this.client.sessionState().get(vbucket).getKeyExtractor().getCollectionIdAndKey(event);
+        CollectionsManifest.CollectionInfo collectionInfo = manifest.getCollection(ciak.collectionId());
+        LOG.debug("Received DCP {} message for document '{}/{}' in vbucket {}", type, collectionInfo.name(), ciak.key(), vbucket);
+        CouchbaseDocumentChange change = new CouchbaseDocumentChange(
+                type,
+                bucketName,
+                collectionInfo.scope().name(),
+                collectionInfo.name(),
+                ciak.key(),
+                vbucket,
+                MessageUtil.getContentAsByteArray(event),
+                seqNo
+        );
+        currentSplit.add(change);
+
+        vbucketOffsets.put((int) vbucket, new StreamOffset(
+                vbucket,
+                change.seqno(),
+                currentMarker,
+                manifest.getId()
+        ));
     }
 
     public interface StreamFailureEvent extends SourceEvent {
@@ -301,14 +346,26 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
         @Override
         public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
             if (!unassignedSplits.isEmpty()) {
-                context.assignSplit(unassignedSplits.remove(0), subtaskId);
+                VBucketSplit split = unassignedSplits.remove(0);
+                LOG.debug("Assigned vbucket {} split {} - {} to subtask {}", split.vbuuid(), split.startOffset(), split.endOffset(), subtaskId);
+                context.assignSplit(split, subtaskId);
             } else if (closed) {
+                LOG.debug("Signalling to subtask {} that there's no more splits", subtaskId);
                 context.signalNoMoreSplits(subtaskId);
+            } else {
+                LOG.debug("No splits available for subtask {}", subtaskId);
+                if (waitingForSplits.contains(subtaskId)) {
+                    waitingForSplits.add(subtaskId);
+                }
             }
         }
 
         @Override
         public void addSplitsBack(List<VBucketSplit> splits, int subtaskId) {
+            LOG.debug("Returning splits: \n\t{}", splits.stream()
+                    .map(s -> String.format("vbucket {}: {} - {}", s.vbuuid(), s.startOffset(), s.endOffset()))
+                    .collect(Collectors.joining("\n\t"))
+            );
             unassignedSplits.addAll(0, splits);
         }
 
@@ -324,10 +381,6 @@ public class CouchbaseSource implements Source<CouchbaseDocumentChange, Couchbas
 
         @Override
         public void close() throws IOException {
-            if (client != null) {
-                client.close();
-            }
-            closed = true;
         }
     }
 
