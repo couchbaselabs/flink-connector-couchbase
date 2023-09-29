@@ -14,7 +14,7 @@ public class CouchbaseQuerySource implements Source<JsonObject, CouchbaseQuerySo
 
     @Override
     public Boundedness getBoundedness() {
-        return null;
+        return Boundedness.BOUNDED;
     }
 
     @Override

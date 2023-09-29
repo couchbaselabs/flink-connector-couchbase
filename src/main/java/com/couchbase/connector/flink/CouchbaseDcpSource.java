@@ -25,6 +25,7 @@ import org.apache.flink.metrics.MetricGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
@@ -32,58 +33,145 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
+/**
+ * Unbounded DCP source that connects to cluster nodes and sends CouchbaseDocumentChanges down a Flink stream
+ * Replaces {@link CouchbaseSource} as it uses newer Flink APIs
+ */
 public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, CouchbaseDcpSource.VBucketSplit, Map<Integer, StreamOffset>>, DataEventHandler, ControlEventHandler {
     private static final Logger LOG = LoggerFactory.getLogger(CouchbaseDcpSource.class);
+    /**
+     * List of received DCP snapshots that haven't been assigned to any worker threads
+     */
     private List<VBucketSplit> unassignedSplits = Collections.synchronizedList(new LinkedList<>());
+    /**
+     * Currently populating DCP snapshot
+     */
     private VBucketSplit currentSplit;
+    /**
+     * DCP client
+     */
     private Client client;
     private String seedNodes;
     private String username;
     private String password;
     private String bucketName;
     private String scopeName;
-    private String collectionName;
+    private String[] collectionNames;
+    /**
+     * Flink metrics for received mutation events
+     */
     private Counter mutationCounter;
 
+    /**
+     * Internal mutation events counter
+     */
     private long mutations;
+    /**
+     * Flink metrics for received deletion events
+     */
     private Counter deletionCounter;
+    /**
+     * Internal deletion events counter
+     */
     private long deletions;
+    /**
+     * Flink metrics for received expiration events
+     */
     private Counter expirationCounter;
+    /**
+     * Internal expiration events counter
+     */
     private long expirations;
+    /**
+     * State flag used to detect that the source has been closed
+     */
     private boolean closed;
+    /**
+     * Continuously updated map of DCP offsets used as Flink stream snapshot for restoring the stream in case of failure
+     */
     private Map<Integer, StreamOffset> vbucketOffsets = new ConcurrentHashMap<>();
+    /**
+     * Latest received DCP marker
+     */
     private SnapshotMarker currentMarker = null;
+    /**
+     * Source boundedness. Default value is CONTINOUS_UNBOUNDED, will be set to BOUNDED if event limit is set
+     */
     private Boundedness boundedness = Boundedness.CONTINUOUS_UNBOUNDED;
+    /**
+     * Limits how many events should this source read from DCP. Default value is -1 (unlimited).
+     */
     private long maxEvents = -1L;
+    /**
+     * Flink context used for communication with workers
+     */
     private SplitEnumeratorContext<VBucketSplit> context;
+    /**
+     * A list of workers whose split requests couldn't be fulfilled because there was not enough events.
+     */
     private ArrayList<Integer> waitingForSplits = new ArrayList<>();
 
-    public CouchbaseDcpSource(String seedNodes, String username, String password, String bucketName, String scopeName, String collectionName) {
+    /**
+     * Constructs CouchbaseDcpSource.
+     * @param seedNodes Initial list of Couchbase cluster nodes to connect to. See {@link Client.Builder#seedNodes(String...)}
+     * @param username Couchbase cluster username. See {@link Client.Builder#username(String)}
+     * @param password Couchbase cluster password. See {@link Client.Builder#password(String)}
+     * @param bucketName Name of a Couchbase bucket to read events from. See {@link Client.Builder#bucket(String)}
+     * @param scopeName (Optional) Name of a Couchbase scope to read events from. If null, will read from all scopes in provided bucket. See @{link {@link Client.Builder#scopeName(String}}
+     * @param collectionNames (Optional) Names of Couchbase collections to read events from. See {@link Client.Builder#collectionNames(String...)}
+     */
+    public CouchbaseDcpSource(@Nonnull String seedNodes, @Nonnull String username, @Nonnull String password, @Nonnull String bucketName, @Nullable String scopeName, @Nullable String... collectionNames) {
         this.seedNodes = seedNodes;
         this.username = username;
         this.password = password;
         this.bucketName = bucketName;
         this.scopeName = scopeName;
-        this.collectionName = collectionName;
+        this.collectionNames = collectionNames;
+
+        if (collectionNames != null && collectionNames.length > 0 && scopeName == null) {
+            throw new IllegalArgumentException("Scope name is required when specifying collection name(s)");
+        }
         LOG.debug("Initialized couchbase datasource with seed nodes '{}'", seedNodes);
     }
 
+    /**
+     * Constructs CouchbaseDcpSource that reads events from all scopes and collections in a bucket.
+     * @param seedNodes Initial list of Couchbase cluster nodes to connect to. See {@link Client.Builder#seedNodes(String...)}
+     * @param username Couchbase cluster username. See {@link Client.Builder#username(String)}
+     * @param password Couchbase cluster password. See {@link Client.Builder#password(String)}
+     * @param bucketName Name of a Couchbase bucket to read events from. See {@link Client.Builder#bucket(String)}
+     */
     public CouchbaseDcpSource(String seedNodes, String username, String password, String bucketName) {
         this(seedNodes, username, password, bucketName, null, null);
     }
 
+    /**
+     * @return {@link Boundedness} of this source
+     */
     @Override
     public Boundedness getBoundedness() {
         return boundedness;
     }
 
+    /**
+     * Sets boundedness for this source. Used in tests.
+     * @param boundedness
+     * @return this
+     */
     CouchbaseDcpSource setBoundedness(Boundedness boundedness) {
         this.boundedness = boundedness;
         LOG.debug("Boundedness set to {}", boundedness);
         return this;
     }
 
+    /**
+     * Limits the total number of mutation, deletion and expiration events to be read by this source.
+     * The source will report downstream about reaching this limit by sending a "noMoreSplits" signal
+     * @param max maximum number of events
+     * @return this
+     */
     public CouchbaseDcpSource setMaxEvents(long max) {
         LOG.debug("Max events limited to {}", max);
         setBoundedness(Boundedness.BOUNDED);
@@ -91,46 +179,80 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         return this;
     }
 
+    /**
+     * Creates an enumerator that is used by Flink to read chunks of the stream called Splits. See {@link SourceSplit}
+     * @param enumContext
+     * @return a new split enumerator in which every split corresponds to a DCP snapshot
+     */
     @Override
-    public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> createEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext) throws Exception {
+    public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> createEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext) {
         LOG.debug("Creating new Enumerator");
         return new VBucketSplitEnumerator(enumContext);
     }
 
+    /**
+     * Re-creates a split enumerator and restores stream offsets using stream snapshot data. See @{link {@link Source#restoreEnumerator(SplitEnumeratorContext, Object)}}
+     * @param enumContext enumerator context
+     * @param checkpoint snapshot data
+     * @return re-created enumerator
+     */
     @Override
-    public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> restoreEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext, Map<Integer, StreamOffset> checkpoint) throws Exception {
+    public SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> restoreEnumerator(SplitEnumeratorContext<VBucketSplit> enumContext, Map<Integer, StreamOffset> checkpoint) {
         LOG.debug("Restored offsets: {}", checkpoint);
         vbucketOffsets.putAll(checkpoint);
         return new VBucketSplitEnumerator(enumContext);
     }
 
+    /**
+     * Creates a new split serializer. See {@link SimpleVersionedSerializer}
+     * @return created split serializer
+     */
     @Override
     public SimpleVersionedSerializer<VBucketSplit> getSplitSerializer() {
         return new VBucketSplitSerializer();
     }
 
+    /**
+     * Creates a new snapshot serializer. See {@link SimpleVersionedSerializer}
+     * @return created snapshot serializer
+     */
     @Override
     public SimpleVersionedSerializer<Map<Integer, StreamOffset>> getEnumeratorCheckpointSerializer() {
         return new CheckpointSerializer();
     }
 
+    /**
+     * Creates a new {@link SourceReader} which reads {@link CouchbaseDocumentChange} objects from assigned to its worker split
+     * @param readerContext worker context
+     * @return created {@link SourceReader}
+     */
     @Override
-    public SourceReader<CouchbaseDocumentChange, VBucketSplit> createReader(SourceReaderContext readerContext) throws Exception {
+    public SourceReader<CouchbaseDocumentChange, VBucketSplit> createReader(SourceReaderContext readerContext) {
         return new VBucketSplitReader(readerContext);
     }
 
+    /**
+     * Creates a new DCP client and connects it to the cluster *if that haven't been done before or if this source was previously closed*
+     * @param context Flink context
+     */
     private void ensureStarted(SplitEnumeratorContext<VBucketSplit> context) {
         this.context = context;
         if (this.client == null) {
             LOG.info("Starting couchbase source with seed nodes '{}'", seedNodes);
             ensureMetrics(context);
-            this.client = Client.builder()
+            Client.Builder builder = Client.builder()
                     .userAgent("flink-connector", "0.2.0")
                     .seedNodes(this.seedNodes)
                     .credentials(this.username, this.password)
                     .bucket(this.bucketName)
-                    .flowControl(128 * 1024 * 1024)
-                    .build();
+                    .flowControl(128 * 1024 * 1024);
+            if (scopeName != null) {
+                builder.scopeName(scopeName);
+            }
+            if (collectionNames != null && collectionNames.length > 0) {
+                builder.collectionNames(collectionNames);
+            }
+            this.client = builder.build();
             this.client.dataEventHandler(this);
             this.client.controlEventHandler(this);
             try {
@@ -150,6 +272,10 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
+    /**
+     * Helper method that updates internal mutation counter and reports mutation events metric to Flink
+     * @param context flink context
+     */
     private void incMutations(SplitEnumeratorContext<VBucketSplit> context) {
         ensureMetrics(context);
         if (mutationCounter != null) {
@@ -160,6 +286,10 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
+    /**
+     * Helper method that updates internal deletion counter and reports deletion events metric to Flink
+     * @param context flink context
+     */
     private void incDeletions(SplitEnumeratorContext<VBucketSplit> context) {
         ensureMetrics(context);
         if (deletionCounter != null) {
@@ -170,6 +300,10 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
+    /**
+     * Helper method that updates internal expirations counter and reports expiration events metric to Flink
+     * @param context flink context
+     */
     private void incExpirations(SplitEnumeratorContext<VBucketSplit> context) {
         ensureMetrics(context);
         if (expirationCounter != null) {
@@ -180,6 +314,10 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
+    /**
+     * Helper method that fetches metric objects from Flink (if metric reporting is enabled)
+     * @param context flink context
+     */
     private void ensureMetrics(SplitEnumeratorContext<VBucketSplit> context) {
         if (mutationCounter == null) {
             MetricGroup metrics = context.metricGroup();
@@ -191,6 +329,9 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
+    /**
+     * Closes this source by disconnecting DCP stream, destroying the DCP client and reporting to workers that there will be no more splits
+     */
     private void close() {
         if (this.client != null) {
             this.client.close();
@@ -198,11 +339,17 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
             this.client = null;
         }
         closed = true;
-        if (!waitingForSplits.isEmpty()) {
-            waitingForSplits.forEach(i -> context.signalNoMoreSplits(i));
+        if (unassignedSplits.isEmpty()){
+            IntStream.range(0, context.currentParallelism()).forEach(i -> context.signalNoMoreSplits(i));
         }
     }
 
+    /**
+     * DCP event handler that transforms raw DCP events into {@link CouchbaseDocumentChange}s, puts them into {@Link VBucketSplit}s,
+     * assigns received splits to waiting for splits workers and keeps track of DCP snapshots.
+     * @param flowController DCP flow controller used to acknowledge received messages
+     * @param event DCP message data
+     */
     @Override
     public void onEvent(ChannelFlowController flowController, ByteBuf event) {
         if (DcpMutationMessage.is(event)) {
@@ -245,6 +392,11 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
+    /**
+     * Helper method that transforms DCP events into {@link CouchbaseDocumentChange}s and puts them into the current {@link VBucketSplit} for further processing by Flink workers
+     * @param type detected type of the DCP event
+     * @param event DCP event data
+     */
     private void deliverEvent(CouchbaseDocumentChange.Type type, ByteBuf event) {
         short vbucket = MessageUtil.getVbucket(event);
         long seqNo = event.getLong(24);
@@ -274,10 +426,9 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         ));
     }
 
-    public interface StreamFailureEvent extends SourceEvent {
-        StreamFailure failure();
-    }
-
+    /**
+     * A class that holds splits (chunks) of the @{link CouchbaseDocumentChange} stream
+     */
     public static class VBucketSplit implements SourceSplit {
         private final long startOffset;
         private final String id;
@@ -286,7 +437,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         private final int vbuuid;
         private final long endOffset;
 
-        public VBucketSplit(int vbuuid, long start, long end) {
+        private VBucketSplit(int vbuuid, long start, long end) {
             this.vbuuid = vbuuid;
             this.startOffset = start;
             this.endOffset = end;
@@ -327,6 +478,9 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
+    /**
+     * An enumerator that handles split requests from Flink workers. See {@link SplitEnumerator}.
+     */
     public class VBucketSplitEnumerator implements SplitEnumerator<VBucketSplit, Map<Integer, StreamOffset>> {
 
         private SplitEnumeratorContext<VBucketSplit> context;
@@ -358,13 +512,19 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
             }
         }
 
+        /**
+         * Adds splits that failed to be processed by Flink workers to the end of unassigned splits queue
+         * Adding splits back DOES NOT roll the stream back to the failed split as further splits may have been already processed
+         * @param splits splits to be returned to the source
+         * @param subtaskId id of the failed subtask
+         */
         @Override
         public void addSplitsBack(List<VBucketSplit> splits, int subtaskId) {
             LOG.debug("Returning splits: \n\t{}", splits.stream()
                     .map(s -> String.format("vbucket {}: {} - {}", s.vbuuid(), s.startOffset(), s.endOffset()))
                     .collect(Collectors.joining("\n\t"))
             );
-            unassignedSplits.addAll(0, splits);
+            unassignedSplits.addAll(splits);
         }
 
         @Override
@@ -468,6 +628,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
                 result.put(Integer.valueOf(s), new StreamOffset(
                         obj.getLong("vbuuid"),
                         obj.getLong("seqno"),
+                        // todo: fixme so that proper shapshot marker is deserialized here
                         SnapshotMarker.NONE,
                         obj.getLong("cuuid")
                 ));
@@ -498,17 +659,8 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         @Override
         public InputStatus pollNext(ReaderOutput<CouchbaseDocumentChange> output) throws Exception {
             while (this.iterator == null || !this.iterator.hasNext()) {
-                if (this.current != null) {
-                    // done processing a split
-                    vbucketOffsets.put(this.current.vbuuid(), new StreamOffset(
-                            this.current.vbuuid(),
-                            this.current.endOffset(),
-                            new SnapshotMarker(this.current.startOffset(), this.current.endOffset()),
-                            0
-                    ));
-                }
                 if (splits.isEmpty()) {
-                    if (noMoreSplits) {
+                    if (noMoreSplits || closed) {
                         return InputStatus.END_OF_INPUT;
                     }
                     context.sendSplitRequest();
