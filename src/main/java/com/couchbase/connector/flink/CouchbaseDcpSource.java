@@ -333,14 +333,16 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
      * Closes this source by disconnecting DCP stream, destroying the DCP client and reporting to workers that there will be no more splits
      */
     private void close() {
+        if (currentSplit != null && !currentSplit.isEmpty()) {
+            unassignedSplits.add(currentSplit);
+        }
+        currentSplit = null;
+        closed = true;
+        LOG.info("Closing DCP source {}", this);
         if (this.client != null) {
             this.client.close();
             LOG.info("disconnected DCP stream from '{}'", seedNodes);
             this.client = null;
-        }
-        closed = true;
-        if (unassignedSplits.isEmpty()){
-            IntStream.range(0, context.currentParallelism()).forEach(i -> context.signalNoMoreSplits(i));
         }
     }
 
@@ -363,7 +365,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
             incExpirations(context);
         } else if (DcpSnapshotMarkerRequest.is(event)) {
             LOG.debug("received DCP snapshot for vbucket {}: {} - {}", MessageUtil.getVbucket(event), DcpSnapshotMarkerRequest.startSeqno(event), DcpSnapshotMarkerRequest.endSeqno(event));
-            if (currentSplit != null) {
+            if (currentSplit != null && !currentSplit.isEmpty()) {
                 if (!waitingForSplits.isEmpty()) {
                     int subtask = waitingForSplits.remove(0);
                     context.assignSplit(currentSplit, subtask);
@@ -386,7 +388,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         flowController.ack(event);
         event.release();
 
-        if (maxEvents > -1 && maxEvents < mutations + expirations + deletions) {
+        if (maxEvents > -1 && maxEvents <= mutations + expirations + deletions) {
             LOG.debug("Max events limit ({}) reached (mutations: {}, expirations: {}, deletions: {})", maxEvents, mutations, expirations, deletions);
             close();
         }
@@ -476,6 +478,10 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         public long startOffset() {
             return startOffset;
         }
+
+        public CouchbaseDocumentChange poll() {
+            return changes.remove(0);
+        }
     }
 
     /**
@@ -505,8 +511,8 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
                 LOG.debug("Signalling to subtask {} that there's no more splits", subtaskId);
                 context.signalNoMoreSplits(subtaskId);
             } else {
-                LOG.debug("No splits available for subtask {}", subtaskId);
-                if (waitingForSplits.contains(subtaskId)) {
+                if (!waitingForSplits.contains(subtaskId)) {
+                    LOG.debug("No splits available for subtask {} (closed: {})", subtaskId, closed);
                     waitingForSplits.add(subtaskId);
                 }
             }
@@ -637,12 +643,11 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
     }
 
-    private class VBucketSplitReader implements SourceReader<CouchbaseDocumentChange, VBucketSplit> {
+    private static class VBucketSplitReader implements SourceReader<CouchbaseDocumentChange, VBucketSplit> {
         private final SourceReaderContext context;
         private final List<VBucketSplit> splits = new ArrayList<>();
         private VBucketSplit current;
         private boolean noMoreSplits;
-        private Iterator<CouchbaseDocumentChange> iterator;
         private CompletableFuture<Void> availability = new CompletableFuture<>();
 
         public VBucketSplitReader(SourceReaderContext readerContext) {
@@ -658,20 +663,20 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
 
         @Override
         public InputStatus pollNext(ReaderOutput<CouchbaseDocumentChange> output) throws Exception {
-            while (this.iterator == null || !this.iterator.hasNext()) {
+            if (current == null || current.isEmpty()) {
                 if (splits.isEmpty()) {
-                    if (noMoreSplits || closed) {
+                    if (noMoreSplits) {
+                        LOG.debug("Reader {}: signalling end of input", context.getIndexOfSubtask());
                         return InputStatus.END_OF_INPUT;
                     }
                     context.sendSplitRequest();
                     return InputStatus.NOTHING_AVAILABLE;
                 } else {
                     this.current = splits.remove(0);
-                    this.iterator = this.current.iterator();
                 }
             }
 
-            output.collect(this.iterator.next());
+            output.collect(this.current.poll());
             return InputStatus.MORE_AVAILABLE;
         }
 
@@ -700,6 +705,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
 
         @Override
         public void notifyNoMoreSplits() {
+            LOG.info("Reader {}: notified no more splits");
             noMoreSplits = true;
         }
 

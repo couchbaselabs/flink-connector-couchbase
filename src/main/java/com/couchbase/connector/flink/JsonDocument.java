@@ -34,4 +34,9 @@ public class JsonDocument {
   public byte[] content() {
     return content;
   }
+
+  @Override
+  public String toString() {
+    return String.format("%s/%s", id, content);
+  }
 }

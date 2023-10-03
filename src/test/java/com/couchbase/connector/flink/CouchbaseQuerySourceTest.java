@@ -4,6 +4,7 @@ import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.Collection;
 import com.couchbase.client.java.Scope;
+import com.couchbase.client.java.json.JsonObject;
 import com.couchbase.connector.flink.util.TestSink;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
@@ -24,11 +25,10 @@ import org.testcontainers.couchbase.CouchbaseService;
 
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
-import java.util.concurrent.CompletableFuture;
 import java.util.stream.IntStream;
 
-public class CouchbaseDcpSourceTest {
-    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseDcpSourceTest.class);
+public class CouchbaseQuerySourceTest {
+    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseQuerySourceTest.class);
     @ClassRule
     public static CouchbaseContainer couchbase = new CouchbaseContainer("couchbase/server:enterprise-7.2.0")
             .withBucket(new BucketDefinition("flink-test"))
@@ -54,35 +54,32 @@ public class CouchbaseDcpSourceTest {
                     .build()
     );
 
-    private static final int docnum = 50 + (int) (Math.random() * 10);
+    private static final int docnum = 50 + (int) (Math.random() * 1000);
     @BeforeClass
     public static void setUp() {
         LOG.info("Starting couchbase container.");
         couchbase.start();
     }
 
-    private CompletableFuture sendTestDocuments() {
-        CompletableFuture result = new CompletableFuture();
-        new Thread(() -> {
-            try {
-                Thread.sleep(3000);
-                LOG.info("Sending test data...");
-                Cluster cluster = Cluster.connect(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword());
-                Bucket testBucket = cluster.bucket("flink-test");
-                testBucket.waitUntilReady(Duration.of(1, ChronoUnit.MINUTES));
-                Scope testScope = testBucket.scope("_default");
-                Collection testCollection = testScope.collection("_default");
-                IntStream.range(0, docnum)
-                        .peek(i -> LOG.debug("Creating document {}", i))
-                        .forEach(i -> testCollection.insert(String.valueOf(i), i % 2));
-
-                LOG.info("Sent test data");
-            } catch (Exception e) {
-                LOG.error("Failed to create test data", e);
-                result.completeExceptionally(e);
+    private void sendTestDocuments() {
+        LOG.info("Sending test data...");
+        try {
+            Cluster cluster = Cluster.connect(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword());
+            Bucket testBucket = cluster.bucket("flink-test");
+            testBucket.waitUntilReady(Duration.of(1, ChronoUnit.MINUTES));
+            Scope testScope = testBucket.scope("_default");
+            Collection testCollection = testScope.collection("_default");
+            IntStream.range(0, docnum)
+                    .forEach(i -> testCollection.insert(String.valueOf(i), i % 2));
+        } catch (Throwable e) {
+            while (e.getCause() != null && e.getCause() != e) {
+                e = e.getCause();
             }
-        }).start();
-        return result;
+            throw new RuntimeException("Failed to send test data", e);
+        }
+
+
+        LOG.info("Sent test data");
     }
 
     @AfterClass
@@ -92,9 +89,9 @@ public class CouchbaseDcpSourceTest {
 
     @Test
     public void couchbaseSource() throws Exception {
-         CouchbaseDcpSource source = new CouchbaseDcpSource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword(), "flink-test")
-                 .setBoundedness(Boundedness.BOUNDED)
-                 .setMaxEvents(docnum);
+         CouchbaseQuerySource source = new CouchbaseQuerySource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword())
+                 .query("SELECT * FROM `flink-test`.`_default`.`_default`")
+                 .pageSize(5);
 
          Assert.assertEquals("Invalid source boundedness", Boundedness.BOUNDED, source.getBoundedness());
          StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -102,22 +99,14 @@ public class CouchbaseDcpSourceTest {
          env.setParallelism(2);
          env.getCheckpointConfig().setCheckpointInterval(1000L);
 
-        TestSink<CouchbaseDocumentChange> resultSink = new TestSink<>();
+        TestSink<JsonDocument> resultSink = new TestSink<>();
+        sendTestDocuments();
 
         // just going with the flow...
         env.fromSource(source, WatermarkStrategy.noWatermarks(), "couchbase_dcp_stream")
                 .addSink(resultSink);
 
-        sendTestDocuments().handleAsync((none, error) -> {
-            try {
-                env.close();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-            return null;
-        });
-
-        JobExecutionResult result = env.execute("couchbase_dcp_source_test").getJobExecutionResult();
+        JobExecutionResult result = env.execute("couchbase_query_source_test").getJobExecutionResult();
 
         Assert.assertEquals("Invalid document count", docnum, resultSink.getResults().size());
     }
