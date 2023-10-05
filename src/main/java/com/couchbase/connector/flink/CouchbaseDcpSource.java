@@ -1,11 +1,11 @@
 package com.couchbase.connector.flink;
 
+import com.couchbase.client.core.deps.io.netty.buffer.ByteBuf;
 import com.couchbase.client.dcp.Client;
 import com.couchbase.client.dcp.ControlEventHandler;
 import com.couchbase.client.dcp.DataEventHandler;
 import com.couchbase.client.dcp.StreamFrom;
 import com.couchbase.client.dcp.StreamTo;
-import com.couchbase.client.dcp.deps.io.netty.buffer.ByteBuf;
 import com.couchbase.client.dcp.highlevel.*;
 import com.couchbase.client.dcp.highlevel.internal.CollectionIdAndKey;
 import com.couchbase.client.dcp.highlevel.internal.CollectionsManifest;
@@ -28,6 +28,8 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -112,12 +114,13 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
      * A list of workers whose split requests couldn't be fulfilled because there was not enough events.
      */
     private ArrayList<Integer> waitingForSplits = new ArrayList<>();
+    private Duration connectTimeout = Duration.of(5, ChronoUnit.SECONDS);
 
     /**
      * Constructs CouchbaseDcpSource.
      * @param seedNodes Initial list of Couchbase cluster nodes to connect to. See {@link Client.Builder#seedNodes(String...)}
-     * @param username Couchbase cluster username. See {@link Client.Builder#username(String)}
-     * @param password Couchbase cluster password. See {@link Client.Builder#password(String)}
+     * @param username Couchbase cluster username. See {@link Client.Builder#credentials(String, String)}
+     * @param password Couchbase cluster password. See {@link Client.Builder#credentials(String, String)}
      * @param bucketName Name of a Couchbase bucket to read events from. See {@link Client.Builder#bucket(String)}
      * @param scopeName (Optional) Name of a Couchbase scope to read events from. If null, will read from all scopes in provided bucket. See @{link {@link Client.Builder#scopeName(String}}
      * @param collectionNames (Optional) Names of Couchbase collections to read events from. See {@link Client.Builder#collectionNames(String...)}
@@ -139,8 +142,8 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
     /**
      * Constructs CouchbaseDcpSource that reads events from all scopes and collections in a bucket.
      * @param seedNodes Initial list of Couchbase cluster nodes to connect to. See {@link Client.Builder#seedNodes(String...)}
-     * @param username Couchbase cluster username. See {@link Client.Builder#username(String)}
-     * @param password Couchbase cluster password. See {@link Client.Builder#password(String)}
+     * @param username Couchbase cluster username. See {@link Client.Builder#credentials(String, String)}
+     * @param password Couchbase cluster password. See {@link Client.Builder#credentials(String, String)}
      * @param bucketName Name of a Couchbase bucket to read events from. See {@link Client.Builder#bucket(String)}
      */
     public CouchbaseDcpSource(String seedNodes, String username, String password, String bucketName) {
@@ -166,6 +169,10 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         return this;
     }
 
+    public CouchbaseDcpSource withConnectTimeout(Duration duration) {
+        this.connectTimeout = duration;
+        return this;
+    }
     /**
      * Limits the total number of mutation, deletion and expiration events to be read by this source.
      * The source will report downstream about reaching this limit by sending a "noMoreSplits" signal
@@ -256,12 +263,12 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
             this.client.dataEventHandler(this);
             this.client.controlEventHandler(this);
             try {
-                this.client.connect().await();
+                this.client.connect().block(connectTimeout);
                 if (!vbucketOffsets.isEmpty()) {
-                    this.client.resumeStreaming(vbucketOffsets).await();
+                    this.client.resumeStreaming(vbucketOffsets).block(connectTimeout);
                 } else {
-                    this.client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).await();
-                    this.client.startStreaming().await();
+                    this.client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).block(connectTimeout);
+                    this.client.startStreaming().block(connectTimeout);
                 }
                 LOG.info("connected DCP stream from '{}' with offsets {}", seedNodes, vbucketOffsets);
             } catch (Exception e) {
@@ -400,7 +407,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
      * @param event DCP event data
      */
     private void deliverEvent(CouchbaseDocumentChange.Type type, ByteBuf event) {
-        short vbucket = MessageUtil.getVbucket(event);
+        int vbucket = MessageUtil.getVbucket(event);
         long seqNo = event.getLong(24);
 
         CollectionsManifest manifest = this.client.sessionState().get(vbucket).getCollectionsManifest();
@@ -420,7 +427,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         );
         currentSplit.add(change);
 
-        vbucketOffsets.put((int) vbucket, new StreamOffset(
+        vbucketOffsets.put(vbucket, new StreamOffset(
                 vbucket,
                 change.seqno(),
                 currentMarker,

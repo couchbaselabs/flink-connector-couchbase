@@ -40,6 +40,8 @@ import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunctio
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -48,7 +50,6 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.toMap;
 
 /**
@@ -86,11 +87,18 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
   private final String password;
   private final String bucketName;
 
+  private Duration connectTimeout = Duration.of(5, ChronoUnit.SECONDS);
+
   public CouchbaseSource(String seedNodes, String username, String password, String bucketName) {
     this.seedNodes = requireNonNull(seedNodes);
     this.username = requireNonNull(username);
     this.password = requireNonNull(password);
     this.bucketName = requireNonNull(bucketName);
+  }
+
+  public CouchbaseSource withConnectTimeout(Duration timeout) {
+    this.connectTimeout = timeout;
+    return this;
   }
 
   @Override
@@ -159,7 +167,7 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
 
     // todo need a better way to respond to failures here, and make sure cancelling the task
     // aborts the connection attempt (if it's taking a long time)
-    client.connect().await();
+    client.connect().block(connectTimeout);
     final int numPartitions = client.numPartitions();
 
     final List<Integer> myPartitions = PartitionHelper.getAssignedPartitions(numPartitions, getRuntimeContext());
@@ -174,7 +182,7 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
       return;
     }
 
-    client.resumeStreaming(resumeOffsets).await();
+    client.resumeStreaming(resumeOffsets).block(connectTimeout);
 
     try {
       while (running) {
@@ -205,7 +213,7 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
   private void disconnectDcpClient() {
     try {
       log.info("Disconnecting Couchbase DCP connection...");
-      client.disconnect().await(5, SECONDS);
+      client.disconnect().block(connectTimeout);
       log.info("DCP disconnection complete.");
 
     } catch (Exception e) {

@@ -20,6 +20,8 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -36,6 +38,7 @@ public class CouchbaseQuerySource implements Source<JsonDocument, CouchbaseQuery
     private String queryTemplate;
     private JsonObject namedQueryArguments = JsonObject.create();
     private JsonArray positionQueryArguments = JsonArray.create();
+    private Duration connectTimeout = Duration.of(5, ChronoUnit.SECONDS);
 
     private long pageSize = 100;
 
@@ -56,6 +59,12 @@ public class CouchbaseQuerySource implements Source<JsonDocument, CouchbaseQuery
     public CouchbaseQuerySource query(String query) {
         assertNotStarted();
         this.queryTemplate = query;
+        return this;
+    }
+
+    public CouchbaseQuerySource witConnectTimeout(Duration timeout) {
+        assertNotStarted();
+        this.connectTimeout = timeout;
         return this;
     }
 

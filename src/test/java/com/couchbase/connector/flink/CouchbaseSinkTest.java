@@ -4,8 +4,7 @@ import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.Collection;
 import com.couchbase.client.java.Scope;
-import com.couchbase.client.java.json.JsonObject;
-import com.couchbase.connector.flink.util.TestSink;
+import com.couchbase.client.java.query.QueryResult;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.connector.source.Boundedness;
@@ -27,8 +26,8 @@ import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.stream.IntStream;
 
-public class CouchbaseQuerySourceTest {
-    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseQuerySourceTest.class);
+public class CouchbaseSinkTest {
+    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseSinkTest.class);
     @ClassRule
     public static CouchbaseContainer couchbase = new CouchbaseContainer("couchbase/server:enterprise-7.2.0")
             .withBucket(new BucketDefinition("flink-test"))
@@ -54,14 +53,14 @@ public class CouchbaseQuerySourceTest {
                     .build()
     );
 
-    private static final int docnum = 50 + (int) (Math.random() * 1000);
+    private static final int docnum = 5 + (int) (Math.random() * 1000);
     @BeforeClass
     public static void setUp() {
         LOG.info("Starting couchbase container.");
         couchbase.start();
     }
 
-    private void sendTestDocuments() {
+    private void sendTestDocumentsAndCreateSinkCollection() {
         LOG.info("Sending test data...");
         try {
             Cluster cluster = Cluster.connect(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword());
@@ -71,6 +70,8 @@ public class CouchbaseQuerySourceTest {
             Collection testCollection = testScope.collection("_default");
             IntStream.range(0, docnum)
                     .forEach(i -> testCollection.insert(String.valueOf(i), i % 2));
+
+            cluster.query("CREATE COLLECTION `flink-test`.`_default`.`sink`");
         } catch (Throwable e) {
             while (e.getCause() != null && e.getCause() != e) {
                 e = e.getCause();
@@ -88,10 +89,10 @@ public class CouchbaseQuerySourceTest {
     }
 
     @Test
-    public void couchbaseSource() throws Exception {
+    public void couchbaseSink() throws Exception {
          CouchbaseQuerySource source = new CouchbaseQuerySource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword())
                  .query("SELECT * FROM `flink-test`.`_default`.`_default`")
-                 .pageSize(5);
+                 .pageSize(7);
 
          Assert.assertEquals("Invalid source boundedness", Boundedness.BOUNDED, source.getBoundedness());
          StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -99,15 +100,23 @@ public class CouchbaseQuerySourceTest {
          env.setParallelism(2);
          env.getCheckpointConfig().setCheckpointInterval(1000L);
 
-        TestSink<JsonDocument> resultSink = new TestSink<>();
-        sendTestDocuments();
+        sendTestDocumentsAndCreateSinkCollection();
+        CouchbaseSink sink = new CouchbaseSink(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword(), "flink-test", "_default", "sink");
 
         // just going with the flow...
         env.fromSource(source, WatermarkStrategy.noWatermarks(), CouchbaseQuerySource.class.getSimpleName())
-                .addSink(resultSink);
+                .sinkTo(sink);
 
-        JobExecutionResult result = env.execute("couchbase_query_source_test").getJobExecutionResult();
+        JobExecutionResult result = env.execute("couchbase_sink_test").getJobExecutionResult();
 
-        Assert.assertEquals("Invalid document count", docnum, resultSink.getResults().size());
+        Thread.sleep(docnum * 100L);
+        Assert.assertTrue(result.isJobExecutionResult());
+        Assert.assertEquals("Invalid document count", docnum, getSinkDocumentCount());
+    }
+
+    private int getSinkDocumentCount() {
+        Cluster cluster = Cluster.connect(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword());
+        QueryResult result = cluster.query("SELECT count(*) as count FROM `flink-test`.`_default`.`sink`");
+        return result.rowsAsObject().get(0).getInt("count");
     }
 }

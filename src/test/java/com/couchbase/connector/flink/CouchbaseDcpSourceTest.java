@@ -105,7 +105,7 @@ public class CouchbaseDcpSourceTest {
         TestSink<CouchbaseDocumentChange> resultSink = new TestSink<>();
 
         // just going with the flow...
-        env.fromSource(source, WatermarkStrategy.noWatermarks(), "couchbase_dcp_stream")
+        env.fromSource(source, WatermarkStrategy.noWatermarks(), CouchbaseDcpSource.class.getSimpleName())
                 .addSink(resultSink);
 
         sendTestDocuments().handleAsync((none, error) -> {
