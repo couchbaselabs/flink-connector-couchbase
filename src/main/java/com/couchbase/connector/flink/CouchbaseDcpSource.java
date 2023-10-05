@@ -604,7 +604,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
                         change.getString("scope"),
                         change.getString("collection"),
                         change.getString("key"),
-                        change.getLong("partition"),
+                        change.getInt("partition"),
                         Base64.getDecoder().decode(change.getString("content")),
                         change.getLong("seqno")
                 ));

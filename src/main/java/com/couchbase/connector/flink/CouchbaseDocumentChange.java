@@ -53,11 +53,11 @@ public class CouchbaseDocumentChange {
   private final byte[] content;
   private final int partition;
 
-  public CouchbaseDocumentChange(Type type, String bucket, String scope, String collection, String key, long partition, byte[] content, long seqno) {
+  public CouchbaseDocumentChange(Type type, String bucket, String scope, String collection, String key, int partition, byte[] content, long seqno) {
     this.type = requireNonNull(type);
     this.key = requireNonNull(key);
     this.content = content == null ? new byte[0] : content;
-    this.partition = (int) partition;
+    this.partition = partition;
     this.seqno = seqno;
     this.bucket = bucket;
     this.scope = scope;

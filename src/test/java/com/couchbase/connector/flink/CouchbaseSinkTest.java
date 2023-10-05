@@ -72,6 +72,8 @@ public class CouchbaseSinkTest {
                     .forEach(i -> testCollection.insert(String.valueOf(i), i % 2));
 
             cluster.query("CREATE COLLECTION `flink-test`.`_default`.`sink`");
+            LOG.info("Waiting {} ms to allow cluster to settle", docnum * 30);
+            Thread.sleep(docnum * 30L);
         } catch (Throwable e) {
             while (e.getCause() != null && e.getCause() != e) {
                 e = e.getCause();
@@ -109,7 +111,9 @@ public class CouchbaseSinkTest {
 
         JobExecutionResult result = env.execute("couchbase_sink_test").getJobExecutionResult();
 
-        Thread.sleep(docnum * 100L);
+        LOG.info("Waiting {}ms for the cluster to swallow new documents...", docnum * 30L);
+        Thread.sleep(docnum * 30L);
+        LOG.info("Verifying document count");
         Assert.assertTrue(result.isJobExecutionResult());
         Assert.assertEquals("Invalid document count", docnum, getSinkDocumentCount());
     }

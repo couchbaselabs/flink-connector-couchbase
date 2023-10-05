@@ -152,7 +152,7 @@ public class CouchbaseSource extends RichParallelSourceFunction<CouchbaseDocumen
                 change.getCollection().scope().name(),
                 change.getCollection().name(),
                 change.getKey(),
-                change.getOffset().getVbuuid(),
+                (int) change.getOffset().getVbuuid(),
                 change.getContent(),
                 change.getOffset().getSeqno()
         );
