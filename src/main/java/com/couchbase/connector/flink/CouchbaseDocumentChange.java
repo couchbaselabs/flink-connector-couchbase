@@ -84,6 +84,10 @@ public class CouchbaseDocumentChange {
     return content;
   }
 
+  public JsonDocument document() {
+    return new JsonDocument(key, content);
+  }
+
   public long partition() {
     return partition;
   }

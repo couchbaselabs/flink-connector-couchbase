@@ -26,7 +26,7 @@ import static com.couchbase.client.java.kv.UpsertOptions.upsertOptions;
 import static java.util.Objects.requireNonNull;
 
 /**
- * See ${@link CouchbaseSink}
+ * See ${@link CouchbaseCollectionSink}
  */
 @Deprecated
 public class CouchbaseJsonSink extends RichSinkFunction<JsonDocument> {

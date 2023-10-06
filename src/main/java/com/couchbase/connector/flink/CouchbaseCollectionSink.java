@@ -1,10 +1,24 @@
+/*
+ * Copyright 2023 Couchbase, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.couchbase.connector.flink;
 
 import com.couchbase.client.core.error.DocumentNotFoundException;
 import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.Collection;
 import com.couchbase.client.java.json.JsonObject;
-import com.couchbase.client.java.transactions.TransactionGetResult;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.slf4j.Logger;
@@ -16,9 +30,12 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
-public class CouchbaseSink implements Sink<JsonDocument> {
+/**
+ * A Couchbase sink that writes received {@link JsonDocument}s into a collection
+ */
+public class CouchbaseCollectionSink implements Sink<JsonDocument> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseSink.class);
+    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseCollectionSink.class);
     private final String clusterUrl;
     private final String username;
     private final String password;
@@ -29,7 +46,16 @@ public class CouchbaseSink implements Sink<JsonDocument> {
     private Duration connectTimeout = Duration.of(5, ChronoUnit.SECONDS);
     private transient Cluster cluster;
 
-    public CouchbaseSink(String clusterUrl, String username, String password, String bucket, String scope, String collection) {
+    /**
+     * Configures the sink with specified collection
+     * @param clusterUrl cluster connection string
+     * @param username cluster username
+     * @param password cluster password
+     * @param bucket bucket name for the target collection
+     * @param scope scope name for the target collection
+     * @param collection target collection name
+     */
+    public CouchbaseCollectionSink(String clusterUrl, String username, String password, String bucket, String scope, String collection) {
         this.clusterUrl = clusterUrl;
         this.username = username;
         this.password = password;
@@ -39,11 +65,18 @@ public class CouchbaseSink implements Sink<JsonDocument> {
 
     }
 
-    public CouchbaseSink(String clusterUrl, String username, String password, String bucket) {
+    /**
+     * Configures the sink to store documents in the default collection for specified bucket
+     * @param clusterUrl cluster connection string
+     * @param username cluster username
+     * @param password cluster password
+     * @param bucket bucket name for the default collection
+     */
+    public CouchbaseCollectionSink(String clusterUrl, String username, String password, String bucket) {
         this(clusterUrl, username, password, bucket, "_default", "_default");
     }
 
-    public CouchbaseSink withConnectTimeout(Duration timeout) {
+    public CouchbaseCollectionSink withConnectTimeout(Duration timeout) {
         this.connectTimeout = timeout;
         return this;
     }
@@ -52,7 +85,7 @@ public class CouchbaseSink implements Sink<JsonDocument> {
     public SinkWriter<JsonDocument> createWriter(InitContext initContext) throws IOException {
         cluster = Cluster.connect(clusterUrl, username, password);
         cluster.waitUntilReady(connectTimeout);
-        return new CouchbaseSink.CollectionWriter();
+        return new CouchbaseCollectionSink.CollectionWriter();
     }
 
     private class CollectionWriter implements SinkWriter<JsonDocument> {

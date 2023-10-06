@@ -1,3 +1,18 @@
+/*
+ * Copyright 2023 Couchbase, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.couchbase.connector.flink;
 
 import com.couchbase.client.core.deps.io.netty.buffer.ByteBuf;
@@ -245,7 +260,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
     private void ensureStarted(SplitEnumeratorContext<VBucketSplit> context) {
         this.context = context;
         if (this.client == null) {
-            LOG.info("Starting couchbase source with seed nodes '{}'", seedNodes);
+            LOG.debug("Starting couchbase source with seed nodes '{}'", seedNodes);
             ensureMetrics(context);
             Client.Builder builder = Client.builder()
                     .userAgent("flink-connector", "0.2.0")
@@ -270,7 +285,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
                     this.client.initializeState(StreamFrom.NOW, StreamTo.INFINITY).block(connectTimeout);
                     this.client.startStreaming().block(connectTimeout);
                 }
-                LOG.info("connected DCP stream from '{}' with offsets {}", seedNodes, vbucketOffsets);
+                LOG.debug("connected DCP stream from '{}' with offsets {}", seedNodes, vbucketOffsets);
             } catch (Exception e) {
                 this.client = null;
                 LOG.error("failed to connect DCP stream from '{}'", seedNodes, e);
@@ -345,10 +360,10 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
         }
         currentSplit = null;
         closed = true;
-        LOG.info("Closing DCP source {}", this);
+        LOG.debug("Closing DCP source {}", this);
         if (this.client != null) {
             this.client.close();
-            LOG.info("disconnected DCP stream from '{}'", seedNodes);
+            LOG.debug("disconnected DCP stream from '{}'", seedNodes);
             this.client = null;
         }
     }
@@ -389,7 +404,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
             currentMarker = new SnapshotMarker(DcpSnapshotMarkerRequest.startSeqno(event), DcpSnapshotMarkerRequest.endSeqno(event));
 
         } else {
-            LOG.info("Unknown DCP message type: {} {}", event.getByte(0), event.getByte(1));
+            LOG.debug("Unknown DCP message type: {} {}", event.getByte(0), event.getByte(1));
         }
 
         flowController.ack(event);
@@ -712,7 +727,7 @@ public class CouchbaseDcpSource implements Source<CouchbaseDocumentChange, Couch
 
         @Override
         public void notifyNoMoreSplits() {
-            LOG.info("Reader {}: notified no more splits");
+            LOG.debug("Reader {}: notified no more splits");
             noMoreSplits = true;
         }
 

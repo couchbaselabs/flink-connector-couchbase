@@ -1,3 +1,18 @@
+/*
+ * Copyright 2023 Couchbase, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.couchbase.connector.flink;
 
 import com.couchbase.client.java.Bucket;
@@ -26,8 +41,8 @@ import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.stream.IntStream;
 
-public class CouchbaseSinkTest {
-    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseSinkTest.class);
+public class CouchbaseCollectionSinkTest {
+    private static final Logger LOG = LoggerFactory.getLogger(CouchbaseCollectionSinkTest.class);
     @ClassRule
     public static CouchbaseContainer couchbase = new CouchbaseContainer("couchbase/server:enterprise-7.2.0")
             .withBucket(new BucketDefinition("flink-test"))
@@ -94,7 +109,7 @@ public class CouchbaseSinkTest {
     public void couchbaseSink() throws Exception {
          CouchbaseQuerySource source = new CouchbaseQuerySource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword())
                  .query("SELECT * FROM `flink-test`.`_default`.`_default`")
-                 .pageSize(7);
+                 .splitSize(7);
 
          Assert.assertEquals("Invalid source boundedness", Boundedness.BOUNDED, source.getBoundedness());
          StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -103,7 +118,7 @@ public class CouchbaseSinkTest {
          env.getCheckpointConfig().setCheckpointInterval(1000L);
 
         sendTestDocumentsAndCreateSinkCollection();
-        CouchbaseSink sink = new CouchbaseSink(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword(), "flink-test", "_default", "sink");
+        CouchbaseCollectionSink sink = new CouchbaseCollectionSink(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword(), "flink-test", "_default", "sink");
 
         // just going with the flow...
         env.fromSource(source, WatermarkStrategy.noWatermarks(), CouchbaseQuerySource.class.getSimpleName())

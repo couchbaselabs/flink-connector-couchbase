@@ -1,10 +1,24 @@
+/*
+ * Copyright 2023 Couchbase, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.couchbase.connector.flink;
 
 import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.Collection;
 import com.couchbase.client.java.Scope;
-import com.couchbase.client.java.json.JsonObject;
 import com.couchbase.connector.flink.util.TestSink;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
@@ -91,7 +105,7 @@ public class CouchbaseQuerySourceTest {
     public void couchbaseSource() throws Exception {
          CouchbaseQuerySource source = new CouchbaseQuerySource(couchbase.getConnectionString(), couchbase.getUsername(), couchbase.getPassword())
                  .query("SELECT * FROM `flink-test`.`_default`.`_default`")
-                 .pageSize(5);
+                 .splitSize(5);
 
          Assert.assertEquals("Invalid source boundedness", Boundedness.BOUNDED, source.getBoundedness());
          StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
