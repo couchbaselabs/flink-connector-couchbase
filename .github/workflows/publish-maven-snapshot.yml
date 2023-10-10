@@ -2,7 +2,7 @@ name: Publish package to the Maven Central Repository
 on:
   push:
     branches:
-      - 'sbapshot'
+      - 'snapshot'
 jobs:
   publish:
     runs-on: ubuntu-latest
