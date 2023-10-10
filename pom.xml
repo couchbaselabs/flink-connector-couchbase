@@ -10,7 +10,7 @@
 
     <name>flink-connector-couchbase</name>
     <description>Couchbase Source and Sink for Flink</description>
-    <url>http://couchbase.com</url>
+    <url>https://couchbase.com</url>
 
     <packaging>jar</packaging>
 
@@ -31,13 +31,13 @@
 
     <organization>
         <name>Couchbase, Inc.</name>
-        <url>http://couchbase.com</url>
+        <url>https://couchbase.com</url>
     </organization>
 
     <licenses>
         <license>
             <name>The Apache Software License, Version 2.0</name>
-            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
             <distribution>repo</distribution>
         </license>
     </licenses>
@@ -58,11 +58,6 @@
     </issueManagement>
 
     <developers>
-        <developer>
-            <id>dnault</id>
-            <name>David Nault</name>
-            <email>david.nault@couchbase.com</email>
-        </developer>
         <developer>
             <id>chedim</id>
             <name>Dmitrii Chechetkin</name>
