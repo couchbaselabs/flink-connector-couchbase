@@ -116,8 +116,12 @@ public class CouchbaseQuerySourceTest {
         TestSink<JsonDocument> resultSink = new TestSink<>();
         sendTestDocuments();
 
+        LOG.info("Waiting {}ms for the cluster to swallow new documents...", docnum * 30L);
+        Thread.sleep(docnum * 30L);
+
         // just going with the flow...
         env.fromSource(source, WatermarkStrategy.noWatermarks(), CouchbaseQuerySource.class.getSimpleName())
+                .setBufferTimeout(10000)
                 .addSink(resultSink);
 
         JobExecutionResult result = env.execute("couchbase_query_source_test").getJobExecutionResult();

@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -89,36 +90,43 @@ public class CouchbaseCollectionSink implements Sink<JsonDocument> {
     }
 
     private class CollectionWriter implements SinkWriter<JsonDocument> {
-        private List<JsonDocument> buffer = new ArrayList<>();
+        private JsonDocument[] buffer = new JsonDocument[0];
+        private int bufferSize = 0;
 
         public CollectionWriter() {
         }
 
         @Override
         public void write(JsonDocument document, Context context) throws IOException, InterruptedException {
-            buffer.add(document);
+            if (buffer.length < bufferSize + 1) {
+                int newBufferLength = buffer.length == 0 ? 100 : buffer.length * 2;
+                JsonDocument[] newBuffer = new JsonDocument[newBufferLength];
+                System.arraycopy(buffer, 0, newBuffer, 0, bufferSize);
+                buffer = newBuffer;
+            }
+            buffer[bufferSize++] = document;
         }
 
         @Override
         public void flush(boolean b) throws IOException, InterruptedException {
-            if (buffer == null || buffer.isEmpty()) {
+            if (bufferSize == 0) {
                 return;
             }
 
             Collection collection = cluster.bucket(bucket).scope(scope).collection(collectionName);
             cluster.transactions().run(tx -> {
-                buffer.forEach(doc -> {
+                for (int i = 0; i < bufferSize; i++) {
+                    JsonDocument doc = buffer[i];
                     try {
                         tx.replace(tx.get(collection, doc.id()), JsonObject.fromJson(doc.content()));
                     } catch (DocumentNotFoundException dnfe) {
                         tx.insert(collection, doc.id(), doc.content());
                     }
-                });
+                }
+                docnum += bufferSize;
+                LOG.debug("Flushed {} documents to collection `{}`.`{}`.`{}` (total: {})", bufferSize, bucket, scope, collectionName, docnum);
+                bufferSize = 0;
             });
-
-            docnum += buffer.size();
-            LOG.debug("Flushed {} documents to collection `{}`.`{}`.`{}` (total: {})", buffer.size(), bucket, scope, collectionName, docnum);
-            buffer.clear();
         }
 
         @Override

@@ -252,13 +252,13 @@
                         <goals>
                             <goal>sign</goal>
                         </goals>
-                        <configuration>
-                            <gpgArguments>
-                                <!-- Bypass gpg agent -->
-                                <arg>--pinentry-mode</arg>
-                                <arg>loopback</arg>
-                            </gpgArguments>
-                        </configuration>
+<!--                        <configuration>-->
+<!--                            <gpgArguments>-->
+<!--                                &lt;!&ndash; Bypass gpg agent &ndash;&gt;-->
+<!--                                <arg>&#45;&#45;pinentry-mode</arg>-->
+<!--                                <arg>loopback</arg>-->
+<!--                            </gpgArguments>-->
+<!--                        </configuration>-->
                     </execution>
                 </executions>
             </plugin>
