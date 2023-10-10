@@ -31,7 +31,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
- * Skeleton for a Flink Streaming Job.
+ * Skeleton for a Couchbase DCP listener Flink Streaming Job.
  *
  * <p>For a tutorial how to write a Flink streaming application, check the
  * tutorials and examples on the <a href="http://flink.apache.org/docs/stable/">Flink Website</a>.
@@ -48,10 +48,6 @@ public class StreamingJob {
   public static void main(String[] args) throws Exception {
     // set up the streaming execution environment
 
-//    Configuration config = new Configuration();
-//    config.setBoolean(ConfigConstants.LOCAL_START_WEBSERVER, true);
-//    StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(config);
-
     final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
     env.enableCheckpointing(SECONDS.toMillis(3));
     env.getCheckpointConfig().setMinPauseBetweenCheckpoints(SECONDS.toMillis(1));
@@ -59,7 +55,7 @@ public class StreamingJob {
     env.setMaxParallelism(2);
     env.setParallelism(2);
 
-    CouchbaseSource source = new CouchbaseSource("localhost", "Administrator", "password", "travel-sample");
+    CouchbaseSource source = new CouchbaseDcpSource("localhost", "Administrator", "password", "travel-sample");
     env.addSource(source, "Couchbase Document Changes")
         .shuffle()
         .filter(change -> change.isMutation())
@@ -80,7 +76,7 @@ public class StreamingJob {
           }
         })
 
-        .addSink(new CouchbaseJsonSink("localhost", "Administrator", "password", "sink"))
+        .addSink(new CouchbaseCollectionSink("localhost", "Administrator", "password", "sink"))
         .name("Write to Couchbase");
 
     // execute program

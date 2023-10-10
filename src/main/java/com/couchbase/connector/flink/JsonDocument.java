@@ -16,6 +16,8 @@
 
 package com.couchbase.connector.flink;
 
+import com.couchbase.client.java.json.JsonObject;
+
 import static java.util.Objects.requireNonNull;
 
 public class JsonDocument {
@@ -33,5 +35,14 @@ public class JsonDocument {
 
   public byte[] content() {
     return content;
+  }
+
+  public JsonObject asJsonObject() {
+    return JsonObject.fromJson(content);
+  }
+
+  @Override
+  public String toString() {
+    return String.format("%s/%s", id, content);
   }
 }

@@ -1,6 +1,6 @@
 # Flink Connector for Couchbase Example
 
-Here's a tiny example that uses the Couchbase connector
+Here's a tiny example that uses the Couchbase SQL++ connector
 to copy documents from one bucket to another.
 
 ---

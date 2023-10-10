@@ -25,6 +25,10 @@ import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import static com.couchbase.client.java.kv.UpsertOptions.upsertOptions;
 import static java.util.Objects.requireNonNull;
 
+/**
+ * See ${@link CouchbaseCollectionSink}
+ */
+@Deprecated
 public class CouchbaseJsonSink extends RichSinkFunction<JsonDocument> {
   private Cluster cluster;
   private Collection collection;
