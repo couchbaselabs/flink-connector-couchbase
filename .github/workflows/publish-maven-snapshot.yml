@@ -13,7 +13,7 @@ jobs:
         with:
           java-version: '11'
           distribution: 'temurin'
-          server-id: snapshots-repo
+          server-id: ossrh
           server-username: ${{ secrets.MAVEN_USERNAME }}
           server-password: ${{ secrets.MAVEN_TOKEN }}
           gpg-private-key: ${{ secrets.SONATYPE_PGP }}
