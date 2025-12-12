@@ -16,8 +16,6 @@
 
 package com.couchbase.connector.flink;
 
-import com.ibm.icu.impl.coll.CollationWeights;
-
 import static java.util.Objects.requireNonNull;
 
 public class CouchbaseDocumentChange {
@@ -53,7 +51,8 @@ public class CouchbaseDocumentChange {
   private final byte[] content;
   private final int partition;
 
-  public CouchbaseDocumentChange(Type type, String bucket, String scope, String collection, String key, int partition, byte[] content, long seqno) {
+  public CouchbaseDocumentChange(Type type, String bucket, String scope, String collection, String key, int partition,
+      byte[] content, long seqno) {
     this.type = requireNonNull(type);
     this.key = requireNonNull(key);
     this.content = content == null ? new byte[0] : content;

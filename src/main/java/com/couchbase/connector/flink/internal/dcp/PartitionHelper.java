@@ -16,6 +16,7 @@
 
 package com.couchbase.connector.flink.internal.dcp;
 
+import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.common.functions.RuntimeContext;
 
 import java.util.ArrayList;
@@ -31,8 +32,8 @@ public class PartitionHelper {
   }
 
   public static List<Integer> getAssignedPartitions(int numPartitions, RuntimeContext ctx) {
-    final int taskIndex = ctx.getIndexOfThisSubtask();
-    final int numTasks = ctx.getNumberOfParallelSubtasks();
+    final int taskIndex = ctx.getTaskInfo().getIndexOfThisSubtask();
+    final int numTasks = ctx.getTaskInfo().getNumberOfParallelSubtasks();
 
     final List<Integer> allPartitions = IntStream.range(0, numPartitions).boxed().collect(toList());
     return chunks(allPartitions, numTasks).get(taskIndex);
@@ -40,7 +41,8 @@ public class PartitionHelper {
 
   /**
    * Splits the given list into the requested number of chunks.
-   * The smallest and largest chunks are guaranteed to differ in size by no more than 1.
+   * The smallest and largest chunks are guaranteed to differ in size by no more
+   * than 1.
    * If the requested number of chunks is greater than the number of items,
    * some chunks will be empty.
    */
