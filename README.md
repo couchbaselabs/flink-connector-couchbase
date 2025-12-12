@@ -42,19 +42,11 @@ into a pagination query `SELECT META().id, data.* FROM ($QUERY) as data LIMIT $S
 
 The sink does not detect concurrent modification of the result set and does not account for that while streaming the documents.
 
-### CouchbaseSource
-This source has been deprecated as it uses deprecated Flink API.
-
-The source works similarly to the `CouchbaseDcpSource`.
-
 ## Sinks
 ### CouchbaseCollectionSink
 This sink accepts `JsonDocument` objects and upserts them into a collection. 
 
 Received documents are first buffered into an `ArrayList` and then flushed upon Flink's request in a transaction.
-
-### CouchbaseJsonSink
-This sink has been deprecated in favor of CouchbaseCollectionSink as it uses deprecated Flink APIs.
 
 # Questions and support
 Please use Github issues for questions and support. The project is maintained by `dmitrii.chechetkin@couchbase.com`.

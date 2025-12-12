@@ -21,6 +21,7 @@ import com.couchbase.client.java.Collection;
 import com.couchbase.client.java.json.JsonObject;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,14 +50,16 @@ public class CouchbaseCollectionSink implements Sink<JsonDocument> {
 
     /**
      * Configures the sink with specified collection
+     * 
      * @param clusterUrl cluster connection string
-     * @param username cluster username
-     * @param password cluster password
-     * @param bucket bucket name for the target collection
-     * @param scope scope name for the target collection
+     * @param username   cluster username
+     * @param password   cluster password
+     * @param bucket     bucket name for the target collection
+     * @param scope      scope name for the target collection
      * @param collection target collection name
      */
-    public CouchbaseCollectionSink(String clusterUrl, String username, String password, String bucket, String scope, String collection) {
+    public CouchbaseCollectionSink(String clusterUrl, String username, String password, String bucket, String scope,
+            String collection) {
         this.clusterUrl = clusterUrl;
         this.username = username;
         this.password = password;
@@ -67,11 +70,13 @@ public class CouchbaseCollectionSink implements Sink<JsonDocument> {
     }
 
     /**
-     * Configures the sink to store documents in the default collection for specified bucket
+     * Configures the sink to store documents in the default collection for
+     * specified bucket
+     * 
      * @param clusterUrl cluster connection string
-     * @param username cluster username
-     * @param password cluster password
-     * @param bucket bucket name for the default collection
+     * @param username   cluster username
+     * @param password   cluster password
+     * @param bucket     bucket name for the default collection
      */
     public CouchbaseCollectionSink(String clusterUrl, String username, String password, String bucket) {
         this(clusterUrl, username, password, bucket, "_default", "_default");
@@ -83,7 +88,7 @@ public class CouchbaseCollectionSink implements Sink<JsonDocument> {
     }
 
     @Override
-    public SinkWriter<JsonDocument> createWriter(InitContext initContext) throws IOException {
+    public SinkWriter<JsonDocument> createWriter(WriterInitContext initContext) throws IOException {
         cluster = Cluster.connect(clusterUrl, username, password);
         cluster.waitUntilReady(connectTimeout);
         return new CouchbaseCollectionSink.CollectionWriter();
@@ -124,14 +129,15 @@ public class CouchbaseCollectionSink implements Sink<JsonDocument> {
                     }
                 }
                 docnum += bufferSize;
-                LOG.debug("Flushed {} documents to collection `{}`.`{}`.`{}` (total: {})", bufferSize, bucket, scope, collectionName, docnum);
+                LOG.debug("Flushed {} documents to collection `{}`.`{}`.`{}` (total: {})", bufferSize, bucket, scope,
+                        collectionName, docnum);
                 bufferSize = 0;
             });
         }
 
         @Override
         public void close() throws Exception {
-
+            cluster.close();
         }
     }
 }
