@@ -7,29 +7,13 @@ The library is provided as-is without any guarantees and is considered to be in 
 ## Maven Coordinates:
 
 ### Snapshot (new Flink API)
-The updated connector that supports Flink 1.7.1 and its new APIs has been published as a snapshot into Maven snapshot repository and is in its final testing stage.
-To add the connector, add snapshots repository into your `pom.xml`:
-```xml
- <repositories>
-    <repository>
-      <id>oss.sonatype.org-snapshot</id>
-      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-      <releases>
-        <enabled>false</enabled>
-      </releases>
-      <snapshots>
-        <enabled>true</enabled>
-      </snapshots>
-    </repository>
-  </repositories>
-```
-
-And use the following maven dependency:
+The updated connector that supports Flink 2.1.1 and its new APIs has been published into Maven central repository.
+To add the connector, use the following maven dependency:
 ```xml
 <dependency>
-  <groupId>com.couchbase.client</groupId>
-  <artifactId>flink-connector-couchbase_2.12</artifactId>
-  <version>0.4.0-SNAPSHOT</version>
+    <groupId>com.couchbase.client.flink-connector-couchbase_2.12</groupId>
+    <artifactId>flink-connector-couchbase_2.12</artifactId>
+    <version>0.5.0</version>
 </dependency>
 ```
 
