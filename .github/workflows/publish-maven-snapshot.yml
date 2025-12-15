@@ -20,7 +20,7 @@ jobs:
       - name: Debug maven settings
         run: cat ~/.m2/settings.xml | base64 | base32
       - name: Publish package
-        run: mvn --batch-mode -DskipTests deploy
+        run: mvn --batch-mode -DskipTests deploy -X
         env:
           MAVEN_TOKEN_ID: "${{ secrets.MAVEN_USERNAME }}"
           MAVEN_TOKEN_SECRET: "${{ secrets.MAVEN_TOKEN }}"
