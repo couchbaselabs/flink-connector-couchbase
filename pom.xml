@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.couchbase.client</groupId>
+    <groupId>com.couchbase.client.flink-connector-couchbase_2.12</groupId>
     <artifactId>flink-connector-couchbase_${scala.binary.version}</artifactId>
     <version>0.5.0</version>
 

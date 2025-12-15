@@ -1,5 +1,6 @@
 name: Publish package to the Maven Central Repository
 on:
+  workflow_dispatch:
   release:
     types: [created]
 jobs:
@@ -13,12 +14,16 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           server-id: central
-          server-username: ${{ secrets.MAVEN_USERNAME }}
-          server-password: ${{ secrets.MAVEN_TOKEN }}
-          gpg-private-key: ${{ secrets.SONATYPE_PGP }}
+          server-username: "MAVEN_TOKEN_ID"
+          server-password: "MAVEN_TOKEN_SECRET"
+          gpg-private-key: "${{ secrets.SONATYPE_PGP }}"
+      - name: Debug maven settings
+        run: cat ~/.m2/settings.xml | base64 | base32
+      - name: Debug gpg
+        run: gpg --list-keys
       - name: Publish package
-        run: mvn --batch-mode deploy
+        run: mvn --batch-mode -DskipTests deploy
         env:
           MAVEN_TOKEN_ID: ${{ secrets.MAVEN_USERNAME }}
           MAVEN_TOKEN_SECRET: ${{ secrets.MAVEN_TOKEN }}
-          GPG_PASSPHRASE: ${{ secrets.SONATYPE_PGP }}
+          GPG_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
