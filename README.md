@@ -6,7 +6,7 @@ The library is provided as-is without any guarantees and is considered to be in 
 
 ## Maven Coordinates:
 
-### Snapshot (new Flink API)
+### new Flink API
 The updated connector that supports Flink 2.1.1 and its new APIs has been published into Maven central repository.
 To add the connector, use the following maven dependency:
 ```xml
@@ -16,19 +16,6 @@ To add the connector, use the following maven dependency:
     <version>0.5.0</version>
 </dependency>
 ```
-
-
-### Release (old Flink API)
-```xml
-<dependency>
-    <groupId>com.couchbase.client</groupId>
-    <artifactId>flink-connector-couchbase_2.12</artifactId>
-    <version>${connectorVersion}</version>
-</dependency>
-```
-
-`${connectorVersion}` = the version of this connector. See the git tags for valid values.
-
 
 ---
 
