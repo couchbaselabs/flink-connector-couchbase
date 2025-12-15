@@ -12,7 +12,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          server-id: ossrh
+          server-id: central
           server-username: ${{ secrets.MAVEN_USERNAME }}
           server-password: ${{ secrets.MAVEN_TOKEN }}
           gpg-private-key: ${{ secrets.SONATYPE_PGP }}
