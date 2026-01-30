@@ -49,4 +49,4 @@ This sink accepts `JsonDocument` objects and upserts them into a collection.
 Received documents are first buffered into an `ArrayList` and then flushed upon Flink's request in a transaction.
 
 # Questions and support
-Please use Github issues for questions and support. The project is maintained by `dmitrii.chechetkin@couchbase.com`.
+Please use Github issues for questions and support. The project is maintained by `devadvocates@couchbase.com`.
